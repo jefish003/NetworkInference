@@ -134,6 +134,7 @@ Example code:
 ```
  from NetworkInference import NetworkInference
  import numpy as np
+ import networkx as nx
  
  NI = NetworkInference()
  n = 20
@@ -147,6 +148,10 @@ Example code:
  NI.set_T(250)
  NI.set_Rho(0.95)
  NI.Gen_Stochastic_Gaussian(Epsilon=1e-3)
+ NI.set_InferenceMethod_oCSE('Gaussian')
+ NI.set_Num_Shuffles_oCSE(500)
+ NI.set_Forward_alpha_oCSE(0.005)
+ NI.set_Backward_alpha_oCSE(0.005)
  Range = np.arange(0.01,1,0.01)
  TPRs = np.zeros(len(Range))
  FPRs = np.zeros(len(Range))
@@ -166,4 +171,57 @@ Example code:
  AUC = NI.Compute_AUC(TPRs,FPRs)
  print("This is the AUC: ", AUC)
  NI.Plot_ROC(TPRs,FPRs)
+```
+
+Another available inference method is the k nearest neighbors (KNN) version of oCSE. This takes a tremendous amount of data to converge however and a long time to run, so don't count on this method accurately finding reasonably dense network structures...
+You can also generate logistic dynamics over the network as shown in the paper "Causation Entropy Identifies Indirect Influences, Dominance of Neighbors and Anticipatory Couplings" by Jie Sun and Erik Bollt.
+Example code:
+
+```
+from NetworkInference import NetworkInference
+import networkx as nx
+
+ NI = NetworkInference()
+ n = 20
+ p = 0.1
+ G = nx.erdos_renyi_graph(n,p)
+ A = nx.adjacency_matrix(G)
+ A = A.todense()
+ NI.set_NetworkAdjacency(A)
+ NI.set_T(250)
+ #Generate logistic dynamics from the 2014 paper...
+ NI.Gen_Logistic_Dynamics(r = 4, sigma = 0.5)
+ 
+ #Set the inference method to KNN
+ NI.set_InferenceMethod_oCSE('KNN')
+ NI.set_Num_Shuffles_oCSE(500)
+ 
+ #Set how many neareast neighbors...
+ NI.set_KNN_K(8)
+ B = NI.Estimate_Network()
+ TPR,FPR = NI.Compute_TPR_FPR()
+ print("This is the TPR and FPR: ",TPR,FPR)
+ #Don't forget you can save the state if you wish..
+ NI.save_state()
+ 
+```
+In the above code I may wish to come back and reload my previously saved state that can be achieved with the following code:
+```
+from NetworkInference import NetworkInference
+
+NI.load_state()
+#NOTE The above will load the previously saved state from TODAY. You can access other saved states by putting in the appropriate
+#date it was saved and also the number of the save if you saved multiple in a day
+#you would use NI.load_state(Date='2022-09-13') if you saved a single thing on that date or NI.load_state(Num=3) to access the 
+#third one you saved today...
+
+
+#Now I can access everything, for instance to find out what value of k I used
+print(NI.return_KNN_K())
+
+#Or to see the matrix of data I used...
+print(NI.return_XY())
+
+#I can even access the parameter I used for the Logistic map model
+print(NI.return_Logistic_parameter_r())
 ```
