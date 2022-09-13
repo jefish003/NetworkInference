@@ -225,3 +225,18 @@ print(NI.return_XY())
 #I can even access the parameter I used for the Logistic map model
 print(NI.return_Logistic_parameter_r())
 ```
+You may also find yourself wishing that you could upload some data, rather than generating synthetic data. This can be achieved as well quite easily, but note that you can't get TPR or FPR anymore (unless you also add a network adjacency of the true network structure, but I am not sure you would be able to do that with real data). Note that the data is assumed to be input as a (T x n) matrix where T is the number of samples and n is the number of nodes or features if you wish.
+
+```
+import numpy as np
+from NetworkInference import NetworkInference
+
+#Load in the data you wish to bring in I am using np.load as an example but you could load in other ways, but to preserve b
+#behavior it is best to feed the data in as a numpy array
+Data = np.load(SOME FILENAME)
+
+NI = NetworkInference()
+NI.set_XY(Data)
+
+B = NI.Estimate_Network()
+```
