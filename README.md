@@ -109,6 +109,7 @@ p = 0.1
 G = nx.erdos_renyi_graph(n,p)
 A = nx.adjacency_matrix(G)
 A = A.todense()
+NI.set_NetworkAdjacency(A)
 
 NI.set_T(1000)
 #The higher Epsilon is with respect to noiseLevel, the higher the signal to noise ratio...
@@ -128,3 +129,41 @@ print("This is the TPR and FPR: ",TPR,FPR)
 ```
 
 There is also a built in way to find the area under curve (AUC) for TPR vs FPR and to plot the reciever operator curve (ROC). 
+Example code:
+
+```
+ from NetworkInference import NetworkInference
+ import numpy as np
+ 
+ NI = NetworkInference()
+ n = 20
+ p = 0.1
+ G = nx.erdos_renyi_graph(n,p)
+ A = nx.adjacency_matrix(G)
+ A = A.todense()
+
+ NI.set_NetworkAdjacency(A)
+
+ NI.set_T(250)
+ NI.set_Rho(0.95)
+ NI.Gen_Stochastic_Gaussian(Epsilon=1e-3)
+ Range = np.arange(0.01,1,0.01)
+ TPRs = np.zeros(len(Range))
+ FPRs = np.zeros(len(Range))
+ for i in range(len(Range)):
+     NI.set_Forward_oCSE_alpha(Range[i])
+     NI.set_Backward_oCSE_alpha(Range[i])
+     B = NI.Estimate_Network()
+     TPR,FPR = NI.Compute_TPR_FPR()
+     print()
+     print()
+     print("This is the TPR and FPR: ",TPR,FPR)
+     print()
+     print()
+     TPRs[i] = TPR
+     FPRs[i] = FPR
+
+ AUC = NI.Compute_AUC(TPRs,FPRs)
+ print("This is the AUC: ", AUC)
+ NI.Plot_ROC(TPRs,FPRs)
+```
