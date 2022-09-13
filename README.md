@@ -109,18 +109,22 @@ p = 0.1
 G = nx.erdos_renyi_graph(n,p)
 A = nx.adjacency_matrix(G)
 A = A.todense()
+NI = NetworkInference()
 NI.set_NetworkAdjacency(A)
 
 NI.set_T(1000)
 #The higher Epsilon is with respect to noiseLevel, the higher the signal to noise ratio...
-NI.Gen_Poisson_Data(Epsilon=1,noiseLevel=0.5)
+Data = NI.Gen_Poisson_Data(Epsilon=1,noiseLevel=0.5)
 NI.set_InferenceMethod_oCSE('Poisson')
 NI.set_Num_Shuffles_oCSE(500)
 NI.set_Forward_oCSE_alpha(0.01)
-NI.set_Bacward_oCSE_alpha(0.01)
+NI.set_Backward_oCSE_alpha(0.01)
 #The time shift parameter is Tau. In the above paper Tau of 0 was used. 
 #In Gaussian oCSE paper Tau = 1 was used. The default in the code is Tau=1.
 NI.set_Tau(0)
+
+#Set the data...
+NI.set_XY(Data)
 
 #Note the above parameters are not as strict as the paper, see the details above for better results...
 B = NI.Estimate_Network()
