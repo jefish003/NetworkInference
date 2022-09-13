@@ -9,6 +9,7 @@ from sklearn.neighbors import KernelDensity
 from scipy.spatial import distance
 from scipy.special import gamma as Gamma
 from scipy.special import digamma as Digamma
+import scipy.stats as SStats
 import numpy as np
 import itertools
 import copy
@@ -71,7 +72,7 @@ class NetworkInference:
         self.Sinit = None
         self.Sfinal = None
         #TO DO,Add all of the other listed methods. These will become available in future renditions of the software.
-        self.Available_Inference_Methods = ['Standar_oCSE', 'Alternative_oCSE']#['Standard_oCSE', 'Alternative_oCSE', 'Lasso', 'Graphical_Lasso', 
+        self.Available_Inference_Methods = ['Standard_oCSE', 'Alternative_oCSE']#['Standard_oCSE', 'Alternative_oCSE', 'Lasso', 'Graphical_Lasso', 
                                            # 'GLM_Lasso', 'Kernel_Lasso','Entropic_Regression','Convergent_Cross_Mapping',
                                            # 'PCMCI','PCMCIplus','LPMCI','Partial_Correlation','GPDC']
         self.DataType = 'Continuous'
@@ -501,6 +502,8 @@ class NetworkInference:
         A = self.NetworkAdjacency
         #Must adjust the adjacency matrix so that dynamics stay in [0,1]
         A = A/np.sum(A,axis=1)
+        A[np.isnan(A)] = 0
+        A[np.isinf(A)] = 0
         #Since the row sums equal to 1 the Laplacian matrix is easy...
         L = np.eye(self.n)-A
         L = np.array(L)
@@ -837,15 +840,85 @@ class NetworkInference:
     def Compute_CMI_NegativeBinomial(self,X):
         Blah = 1
     
+    def PoissEnt(self,Lambdas):
+        
+        Lambdas = np.abs(Lambdas)
+        First = np.exp(-Lambdas)
+        Psum = First
+        P = [np.matrix(First)]
+        counter = 0
+        small = 1
+        i = 1
+        while np.max(1-Psum)>1e-16 and small>1e-75:
+            counter = counter+1
+            prob = SStats.poisson.pmf(i,Lambdas)
+            Psum = Psum+prob
+            P.append(np.matrix(prob))
+            if i >=np.max(Lambdas):
+                small = np.min(prob)
+            
+            i = i+1
+        
+        P = np.array(P).squeeze()
+        est_a = P*np.log(P)
+        est_a[np.isinf(est_a)]=0
+        est_a[np.isnan(est_a)]=0
+        try:
+            est = -np.sum(est_a,axis=0)
+        except:
+            est = -np.sum(est_a)
+        return np.real(est)
+    
+    def PoissonJointEntropy_New(self,Cov):
+        T = np.triu(Cov,1)
+        T = np.matrix(T)
+        U = np.matrix(np.diag(Cov))
+        Ent1 = np.sum(self.PoissEnt(U))
+        Ent2 = np.sum(T)
+        return Ent1+Ent2
+    
     def Compute_CMI_Poisson(self,X):
         """Estimate of conditional mutual information from Poisson marginals,
         from the paper by Fish, Sun and Bollt entitled: 
             Interaction Networks from Discrete Event Data by Poisson Multivariate 
             Mutual Information Estimation and Information Flow with Applications 
             from Gene Expression Data"""
-        SXY = np.corrcoef(X.T,self.Y.T)
-        l_est = SXY - np.diag(np.diag(SXY))
-    
+        
+        if self.Z is None:
+            SXY = np.corrcoef(X.T,self.Y.T)
+            l_est = SXY - np.diag(np.diag(SXY))
+            np.fill_diagonal(SXY,np.diagonal(SXY)-np.sum(l_est,axis=0))
+            Dcov = np.diag(SXY)+np.sum(l_est,axis=0)
+            TF = self.PoissonJointEntropy_New(SXY)
+            FT = np.sum(self.PoissEnt(Dcov))
+            #print(FT-TF)
+           
+            return FT-TF
+        else:
+            SzX = X.shape[1]
+            SzY = self.Y.shape[1]
+            SzZ = self.Z.shape[1]
+            indX = np.matrix(np.arange(SzX))
+            indY = np.matrix(np.arange(SzY)+SzX)
+            indZ = np.matrix(np.arange(SzZ)+SzX+SzY)
+            #print(indX,indY,indZ)
+            XYZ = np.concatenate((X,self.Y,self.Z),axis=1)
+            SXYZ = np.corrcoef(XYZ.T)
+            SS = SXYZ
+            Sa = SXYZ-np.diag(np.diag(SXYZ))
+            np.fill_diagonal(SS,np.diagonal(SS)-Sa)
+            SS[0:SzX,0:SzX] = SS[0:SzX,0:SzX]+SXYZ[0:SzX,SzX:SzX+SzY]
+            SS[SzX:SzX+SzY,SzX:SzX+SzY] = SS[SzX:SzX+SzY,SzX:SzX+SzY]+SXYZ[SzX:SzX+SzY,0:SzX]
+            S_est1 = SS[np.concatenate((indY.T,indZ.T),axis=0),np.concatenate((indY.T,indZ.T),axis=0)]
+            S_est2 = SS[np.concatenate((indX.T,indZ.T),axis=0),np.concatenate((indX.T,indZ.T),axis=0)]
+            HYZ = self.PoissonJointEntropy_New(S_est1)
+            SindZ = SS[indZ,indZ]
+            HZ = self.PoissonJointEntropy_New(SindZ)
+            HXYZ = self.PoissonJointEntropy_New(SXYZ-np.diag(Sa))
+            HXZ = self.PoissonJointEntropy_New(S_est2)
+            H_YZ = HYZ-HZ
+            H_XYZ = HXYZ-HXZ
+            return H_XYZ-H_YZ
     def Compute_CMI(self,X):
         """Compute the CMI based upon whichever method"""
         if self.InferenceMethod_oCSE == 'Gaussian':
@@ -905,6 +978,7 @@ class NetworkInference:
             Argmax = Ents.argmax()
             X = self.X[:,[SetCheck[Argmax]]]
             Dict = self.Standard_Shuffle_Test_oCSE(X,Ents[Argmax],self.Forward_oCSE_alpha)
+            #print(Dict)
             if Dict['Pass']:
                 S.append(SetCheck[Argmax])
                 if len(S)==1:
