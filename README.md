@@ -26,7 +26,7 @@ Once you have the above packages you will need to download NetworkInference.py t
 Documentation:
 (Note: there are numerous planned functionalities which are not active yet, but I have begun working on them, please ignore these).
 
-Generating synthetic data on a network
+Generating synthetic data on a network and then estimating its network structure
 Currently you must supply the (dense) adjacency matrix of a network to generate synthetic data. There are several types of data currently available:
 -Gaussian stochastic process-
 Example code:
@@ -37,8 +37,8 @@ import networkx as nx
 from matplotlib import pyplot as plt
 
 #GENERATE NETWORK FOR SYNTHETIC DATA
-n = 10
-p = 0.4
+n = 20
+p = 0.1
 G = nx.erdos_renyi_graph(n,p)
 A = nx.adjacency_matrix(G)
 A = A.todense()
@@ -95,3 +95,36 @@ print("This is the TPR and FPR: ",TPR,FPR)
 #in load_state() and a saved number though as the default is to load the previously saved state from today. 
 NI.save_state()
 ```
+We can also imagine a scenario in which the data is discrete and therefore looks a bit more like a Poisson distribution than a Gaussian one. Note that in this scenario it has been shown that using Gaussian oCSE creates a significantly higher false positive rate than using the Poisson version of oCSE. In other words the distribution really does matter! See "Interaction Networks from Discrete Event Data by Poisson Multivariate Mutual Information Estimation and Information Flow with Applications from Gene Expression Data" By Jeremie Fish, Jie Sun and Erik Bollt for more details.
+
+Example code:
+-Poisson Count Process -
+
+```
+from NetworkInference import NetworkInference
+import networkx as nx
+
+n = 20
+p = 0.1
+G = nx.erdos_renyi_graph(n,p)
+A = nx.adjacency_matrix(G)
+A = A.todense()
+
+NI.set_T(1000)
+#The higher Epsilon is with respect to noiseLevel, the higher the signal to noise ratio...
+NI.Gen_Poisson_Data(Epsilon=1,noiseLevel=0.5)
+NI.set_InferenceMethod_oCSE('Poisson')
+NI.set_Num_Shuffles_oCSE(500)
+NI.set_Forward_oCSE_alpha(0.01)
+NI.set_Bacward_oCSE_alpha(0.01)
+#The time shift parameter is Tau. In the above paper Tau of 0 was used. 
+#In Gaussian oCSE paper Tau = 1 was used. The default in the code is Tau=1.
+NI.set_Tau(0)
+
+#Note the above parameters are not as strict as the paper, see the details above for better results...
+B = NI.Estimate_Network()
+TPR,FPR = NI.Compute_TPR_FPR()
+print("This is the TPR and FPR: ",TPR,FPR)
+```
+
+There is also a built in way to find the area under curve (AUC) for TPR vs FPR and to plot the reciever operator curve (ROC). 
