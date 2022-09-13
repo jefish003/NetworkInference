@@ -240,3 +240,5 @@ NI.set_XY(Data)
 
 B = NI.Estimate_Network()
 ```
+
+That covers available functionality for now. Check in again later for more!
