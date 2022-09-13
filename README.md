@@ -31,7 +31,7 @@ Currently you must supply the (dense) adjacency matrix of a network to generate 
 -Gaussian stochastic process-
 Example code:
 
-'''
+```
 from NetworkInference import NetworkInference
 import networkx as nx
 from matplotlib import pyplot as plt
@@ -94,4 +94,4 @@ print("This is the TPR and FPR: ",TPR,FPR)
 #saved in the local directory. To load a saved state use .load_state(). You may have to set a date
 #in load_state() and a saved number though as the default is to load the previously saved state from today. 
 NI.save_state()
-'''
+```
