@@ -502,6 +502,7 @@ class NetworkInference:
         A = self.NetworkAdjacency
         #Must adjust the adjacency matrix so that dynamics stay in [0,1]
         A = A/np.sum(A,axis=1)
+        A = A.T 
         A[np.isnan(A)] = 0
         A[np.isinf(A)] = 0
         #Since the row sums equal to 1 the Laplacian matrix is easy...
