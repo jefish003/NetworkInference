@@ -550,7 +550,7 @@ class NetworkInference:
         One_p = np.ones((p,1))
         NK = self.nchoosek(p,2)
         #Size = (p,p)
-        Tr = self.NetworkAdjacency[NK[:,0]-1,NK[:,1]-1]
+        Tr = np.matrix(self.NetworkAdjacency[NK[:,0]-1,NK[:,1]-1])
         I_p = np.eye(p)
         T_p = np.dot(One_p,Tr)
         PTP = np.array(P)*np.array(T_p)
