@@ -52,7 +52,7 @@ class NetworkInference:
         
         #Inference Stuff
         self.Overall_Inference_Method = 'Standard_oCSE'
-        self.InferenceMethod_oCSE = 'KernelDensity'
+        self.InferenceMethod_oCSE = 'Gaussian'
         self.KernelBandWidth = None
         self.KernelType = 'gaussian'
         self.KNN_K = None
