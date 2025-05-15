@@ -10,6 +10,8 @@ import scipy as sp
 from scipy.spatial import distance
 from scipy.special import gamma as Gamma
 from scipy.special import digamma as Digamma
+from sklearn.linear_model import LassoLarsIC
+from sklearn.linear_model import LassoCV
 import scipy.stats as SStats
 import numpy as np
 import itertools
@@ -21,16 +23,16 @@ from matplotlib import rc
 import time
 
 """Written by Jeremie Fish, 
-   Last Update: April 6th 2022
+   Last Update: April 15th 2025
    
    Depending on method used please cite the appropriate papers..."""
 
 class NetworkInference:
-    """A class for NetworkInference. Version number 0.1"""
+    """A class for NetworkInference. Version number 0.2"""
     def __init__(self):
         
         #Version 
-        self.VersionNum = 0.1
+        self.VersionNum = 0.2
         
         #Time series stuff
         self.n = 100
@@ -65,6 +67,11 @@ class NetworkInference:
         self.Forward_oCSE_alpha = 0.02
         self.Backward_oCSE_alpha = 0.02
         
+        #Information Informed LASSO stuff
+        self.IIkfold = 5 #For crossfold validation when num data points small
+        self.II_InfCriterion = 'bic' #can be aic or bic, bic does better
+        
+        
         
         #Miscellaneous
         self.Pedeli_PoissonAlphas = None
@@ -74,7 +81,7 @@ class NetworkInference:
         self.Sinit = None
         self.Sfinal = None
         #TO DO,Add all of the other listed methods. These will become available in future renditions of the software.
-        self.Available_Inference_Methods = ['Standard_oCSE', 'Alternative_oCSE']#['Standard_oCSE', 'Alternative_oCSE', 'Lasso', 'Graphical_Lasso', 
+        self.Available_Inference_Methods = ['Standard_oCSE', 'Alternative_oCSE', 'InformationInformed_LASSO', 'LASSO']#['Standard_oCSE', 'Alternative_oCSE', 'Lasso', 'Graphical_Lasso', 
                                            # 'GLM_Lasso', 'Kernel_Lasso','Entropic_Regression','Convergent_Cross_Mapping',
                                            # 'PCMCI','PCMCIplus','LPMCI','Partial_Correlation','GPDC']
         self.DataType = 'Continuous'
@@ -93,6 +100,14 @@ class NetworkInference:
         self.FPR = None
         self.AUC = None
         self.Xshuffle = False
+        
+    def set_II_InfCriterion(self,criterion):
+        """Should be a string either 'aic' or 'bic' the only two options """
+        self.II_InfCriterion = criterion
+    
+    def set_IIkfold(self,num):
+        """Should be a positive integer!"""
+        self.IIkfold = num
     
     def set_Xshuffle(self,TF=False):
         self.Xshuffle = TF
@@ -233,6 +248,15 @@ class NetworkInference:
         
     def set_Rho(self,Rho):
         self.Rho = Rho
+    
+    def return_Xshuffle(self):
+        return self.Xshuffle
+    
+    def return_II_InfCriterion(self):
+        return self.II_InfCriterion
+        
+    def return_IIkfold(self):
+        return self.IIkfold
         
     def return_font(self):
         return self.font
@@ -394,6 +418,9 @@ class NetworkInference:
         Save_Dict['TPR'] = self.TPR
         Save_Dict['FPR'] = self.FPR
         Save_Dict['AUC'] = self.AUC
+        Save_Dict['Xshuffle'] = self.Xshuffle
+        Save_Dict['IIkfold'] = self.IIkfold
+        Save_Dict['II_InfCriterion'] = self.II_InfCriterion
         
         Date = datetime.datetime.today().strftime('%Y-%m-%d')
         F = glob.glob('NetworkInference_version_'+str(VersionNum)+'_Date_'+Date+'*.npz')
@@ -471,6 +498,9 @@ class NetworkInference:
         self.set_TPR(Load_Dict['TPR'])
         self.set_FPR(Load_Dict['FPR'])
         self.set_AUC(Load_Dict['AUC'])
+        self.set_Xshuffle(Load_Dict['Xshuffle'])
+        self.set_IIkfold(Load_Dict['IIkfold'])
+        self.set_II_InfCriterion(Load_Dict['II_InfCriterion'])
     
     def nchoosek(self,n,k):
         Range = range(1,n+1)
@@ -1106,21 +1136,17 @@ class NetworkInference:
                 Ents[i] = self.Compute_CMI(X)
                 
                    
-            #print(self.Z,SetCheck[i])
             Argmax = Ents.argmax()
             X = self.X[:,[SetCheck[Argmax]]]
-            #T1 = time.perf_counter_ns()
             Dict = self.Standard_Shuffle_Test_oCSE(X,Ents[Argmax],self.Forward_oCSE_alpha)
-            #print((time.perf_counter_ns()-T1)*10**-9)   
+               
             if Dict['Pass']:
                 S.append(SetCheck[Argmax])
                 self.indZ = np.array(S)
                 if len(S)==1:
-                    self.Z = self.X[:,[SetCheck[Argmax]]]
-                    #self.indZ = np.array([SetCheck[Argmax]])
+                    self.Z = self.X[:,[SetCheck[Argmax]]]                    
                 else:
                     self.Z = np.concatenate((self.Z,self.X[:,[SetCheck[Argmax]]]),axis=1)
-                    #self.indZ = np.hstack((self.Z,np.array([SetCheck[Argmax]])))
             else:
                 NotStop = False
         
@@ -1350,13 +1376,70 @@ class NetworkInference:
                 self.X = XY_1
                 S = self.Alternative_oCSE()
                 B[i,S] = 1
-                
+        
+        elif Method=='InformationInformed_LASSO':
+            XY = self.XY
+            XY_1 = XY[0:self.T-self.Tau,:]
+            XY_2 = XY[self.Tau:,:]
+            B = np.zeros((self.n,self.n))
+            for i in range(self.n):
+                print("Estimating edges for node number: ", i)
+                self.Y  = XY_2[:,[i]]
+                self.X = XY_1
+                self.indY = np.array([self.n])
+                XY = np.hstack((self.X,self.Y))
+                self.bigCorr = np.corrcoef(XY.T)                
+                S = self.II_Lasso()
+                B[i,S] = 1            
+        elif Method=='LASSO':
+            XY = self.XY
+            XY_1 = XY[0:self.T-self.Tau,:]
+            XY_2 = XY[self.Tau:,:]
+            B = np.zeros((self.n,self.n))
+            for i in range(self.n):
+                print("Estimating edges for node number: ", i)
+                self.Y  = XY_2[:,[i]]
+                self.X = XY_1
+                S = self.Lasso()
+                B[i,S] = 1                 
         else:
             #Do nothing
             B = []
         
         self.B = B
         return B
+    
+    def Lasso(self):
+        n = self.n
+        if self.X.shape[0]>n+1:
+            Lass = LassoLarsIC(criterion=self.II_InfCriterion).fit(self.X, self.Y.flatten())  
+        else:
+            Lass = LassoCV(cv=self.IIkfold).fit(self.X, self.Y.flatten())
+        S = np.where(Lass.coef_!=0)
+        return S
+    
+    def II_Lasso(self):
+        n = self.n
+        Set = np.arange(n)
+        self.CMI_matrix = np.zeros(n)
+        for i in range(n):          
+            self.indX = np.array([i])
+            self.indZ = np.setdiff1d(Set,self.indX)
+            self.Z = self.X[:,self.indZ]
+            CMI = self.Compute_CMI_Gaussian_Fast(self.X)
+            if np.isnan(CMI) or np.isinf(CMI):
+                CMI = 1e-100
+            self.CMI_matrix[i] = CMI
+        
+        if self.X.shape[0]>n+1:
+            LLIC = LassoLarsIC(criterion=self.II_InfCriterion).fit(self.X*self.CMI_matrix, self.Y.flatten())
+        else:
+            LLIC = LassoCV(cv=self.IIkfold).fit(self.X*self.CMI_matrix, self.Y.flatten())
+        S = np.where(LLIC.coef_!=0)
+        return S
+    
+    def return_CMI_Mat(self):
+        return self.CMI_matrix
     
     def Compute_TPR_FPR(self):
         if self.NetworkAdjacency is None:
