@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Mar 31 08:39:51 2022
+Created on Tue Apr 29 18:25:12 2025
 
-@author: fishja
+@author: jefis
 """
 
 from sklearn.neighbors import KernelDensity
+import scipy as sp
 from scipy.spatial import distance
 from scipy.special import gamma as Gamma
 from scipy.special import digamma as Digamma
@@ -17,6 +18,7 @@ import datetime
 import glob
 from matplotlib import pyplot as plt
 from matplotlib import rc
+import time
 
 """Written by Jeremie Fish, 
    Last Update: April 6th 2022
@@ -90,6 +92,10 @@ class NetworkInference:
         self.TPR = None
         self.FPR = None
         self.AUC = None
+        self.Xshuffle = False
+    
+    def set_Xshuffle(self,TF=False):
+        self.Xshuffle = TF
     
     def set_font(self,font):
         self.font = font
@@ -624,13 +630,123 @@ class NetworkInference:
         
         self.XY = X
        
-       
+    def Compute_CMI_Gaussian_Fast(self,X):
+        """An implementation of the Gaussian conditional mutual information from
+        the paper by Sun, Taylor and Bollt entitled: 
+            Causal network inference by optimal causation entropy"""
+        #print(self.Xshuffle)
+        #if self.Xshuffle:
+        #    return self.Compute_CMI_Gaussian(X)
+        #else:
+        
+        TupleX = X.shape
+        TupleY = self.Y.shape
+        #Fix this in a moment
+        if not self.Xshuffle:           
+            self.XYInd = np.hstack((self.indX,self.indY))
+        else:
+            
+            self.XYInd = np.hstack((self.shuffX,self.shuffY))
+
+        if len(TupleX)==1:
+            SX = [[1]]
+        
+        else:
+            if TupleX[1] == 1:
+                SX = [[1]]
+            else:
+                if not self.Xshuffle:
+                    SX = self.bigCorr[self.indX,:]
+                    SX = SX[:,self.indX]
+                else:
+                    SX = self.shuffCorr[self.shuffX,:]
+                    SX = SX[:,self.shuffX]
+                
+        
+        if len(TupleY) ==1:
+            SY = [[1]]
+        else:
+            if TupleY[1] == 1:
+                SY = [[1]]
+            else:
+                if not self.Xshuffle:
+                    SY = self.bigCorr[self.indY,:]
+                    SY = SY[:,self.indY]
+                else:
+                    SY = self.shuffCorr[self.shuffY,:]
+                    SY = SY[:,self.shuffY]            
+                
+        SX = np.linalg.det(SX)
+        SY = np.linalg.det(SY)        
+        if self.Z is None:
+            if not self.Xshuffle:
+                XY = self.bigCorr[self.XYInd,:]
+            else:
+                XY = self.shuffCorr[self.XYInd,:]
+            XY = XY[:,self.XYInd]
+            #print(XY)
+            SXY = np.linalg.det(XY)
+            
+            return 0.5*np.log((SX*SY)/SXY)
+            
+        else:
+            if not self.Xshuffle:
+                self.bigInd = np.hstack((self.indX,self.indY,self.indZ))
+                self.XZInd = np.hstack((self.indX,self.indZ))
+            else:
+                #print("This is self.Z: ", self.Z)
+                self.bigInd = np.hstack((self.shuffX,self.shuffY,self.shuffZ))
+                self.XZInd = np.hstack((self.shuffX,self.shuffZ))
+            TupleZ = self.Z.shape
+            if len(TupleZ)==1:
+                SZ = [[1]]
+            else:
+                if TupleZ[1]==1:
+                    SZ = [[1]]
+                else:
+                    if not self.Xshuffle:
+                        SZ = self.bigCorr[self.indZ,:]
+                        SZ = SZ[:,self.indZ]
+                    else:
+                        SZ = self.shuffCorr[self.shuffZ,:]
+                        SZ = SZ[:,self.shuffZ]
+                    
+            
+            SZ = np.linalg.det(SZ)
+            if not self.Xshuffle:
+                self.YZInd = np.hstack((self.indY,self.indZ))
+                self.XYZInd = np.hstack((self.indX,self.indY,self.indZ))
+                XZ = self.bigCorr[self.XZInd,:]
+                XZ = XZ[:,self.XZInd]
+                #print(XZ)
+                YZ = self.bigCorr[self.YZInd,:]
+                YZ = YZ[:,self.YZInd]  
+                XYZ = self.bigCorr[self.XYZInd,:]
+                XYZ = XYZ[:,self.XYZInd]        
+            else:
+                #print("This is self.Z: ", self.Z)
+                self.YZInd = np.hstack((self.shuffY,self.shuffZ))
+                self.XYZInd = np.hstack((self.shuffX,self.shuffY,self.shuffZ))
+                XZ = self.shuffCorr[self.XZInd,:]
+                XZ = XZ[:,self.XZInd]
+                #print(XZ)
+                YZ = self.shuffCorr[self.YZInd,:]
+                YZ = YZ[:,self.YZInd]  
+                XYZ = self.shuffCorr[self.XYZInd,:]
+                XYZ = XYZ[:,self.XYZInd]        
+                
+            SXZ = np.linalg.det(XZ)
+            SYZ = np.linalg.det(YZ)
+            SXYZ = np.linalg.det(XYZ)
+            
+            return 0.5*np.log((SXZ*SYZ)/(SZ*SXYZ))       
        
     
     def Compute_CMI_Gaussian(self,X):
         """An implementation of the Gaussian conditional mutual information from
         the paper by Sun, Taylor and Bollt entitled: 
             Causal network inference by optimal causation entropy"""
+        
         TupleX = X.shape
         TupleY = self.Y.shape
         if len(TupleX)==1:
@@ -650,13 +766,16 @@ class NetworkInference:
             else:
                 SY = np.corrcoef(self.Y.T)
         
-        SX = np.linalg.det(SX)
-        SY = np.linalg.det(SY)        
-        if self.Z is None:
+        
 
-            SXY = np.linalg.det(np.corrcoef(X.T,self.Y.T))
-            
+             
+        if self.Z is None:
+            SX = sp.linalg.det(SX)
+            SY = sp.linalg.det(SY)
+            #SXY = np.linalg.det(np.corrcoef(X.T,self.Y.T))
+            SXY = sp.linalg.det(np.corrcoef(X.T,self.Y.T))            
             return 0.5*np.log((SX*SY)/SXY)
+        
             
         else:
             TupleZ = self.Z.shape
@@ -668,16 +787,25 @@ class NetworkInference:
                 else:
                     SZ = np.corrcoef(self.Z.T)
             
-            SZ = np.linalg.det(SZ)
+            #SZ = np.linalg.det(SZ)
+            SZ = sp.linalg.det(SZ)            
+            #T1 = time.time()
             XZ = np.concatenate((X,self.Z),axis=1)
             YZ = np.concatenate((self.Y,self.Z),axis=1)
             XYZ = np.concatenate((X,self.Y,self.Z),axis=1)
+            #T2 = time.time()-T1
+            #print("This is concatenation time: ", T2)
             
-            SXZ = np.linalg.det(np.corrcoef(XZ.T))
-            SYZ = np.linalg.det(np.corrcoef(YZ.T))
-            SXYZ = np.linalg.det(np.corrcoef(XYZ.T))
+            #SXZ = np.linalg.det(np.corrcoef(XZ.T))
+            #SYZ = np.linalg.det(np.corrcoef(YZ.T))
+            #SXYZ = np.linalg.det(np.corrcoef(XYZ.T))
+            SXZ = sp.linalg.det(np.corrcoef(XZ.T))
+            SYZ = sp.linalg.det(np.corrcoef(YZ.T))
+            SXYZ = sp.linalg.det(np.corrcoef(XYZ.T))            
             
-            return 0.5*np.log((SXZ*SYZ)/(SZ*SXYZ))
+            Value = 0.5*np.log((SXZ*SYZ)/(SZ*SXYZ))
+            
+            return Value
                 
        
     def Compute_CMI_Hawkes(self,X):
@@ -923,7 +1051,7 @@ class NetworkInference:
     def Compute_CMI(self,X):
         """Compute the CMI based upon whichever method"""
         if self.InferenceMethod_oCSE == 'Gaussian':
-            return self.Compute_CMI_Gaussian(X)
+            return self.Compute_CMI_Gaussian_Fast(X)
         
         elif self.InferenceMethod_oCSE == 'KernelDensity':
             return self.Compute_CMI_KernelDensity(X)
@@ -957,7 +1085,6 @@ class NetworkInference:
     
     def Standard_Forward_oCSE(self):
         NotStop = True
-        
         n = self.X.shape[1]
         TestVariables = np.arange(n)
         S = [] 
@@ -972,20 +1099,28 @@ class NetworkInference:
                 break
             Ents = np.zeros(m)
             for i in range(m):
+                
                 X = self.X[:,[SetCheck[i]]]
+                self.indX = np.array(SetCheck[i])
                 
                 Ents[i] = self.Compute_CMI(X)
+                
+                   
             #print(self.Z,SetCheck[i])
             Argmax = Ents.argmax()
             X = self.X[:,[SetCheck[Argmax]]]
+            #T1 = time.perf_counter_ns()
             Dict = self.Standard_Shuffle_Test_oCSE(X,Ents[Argmax],self.Forward_oCSE_alpha)
-            #print(Dict)
+            #print((time.perf_counter_ns()-T1)*10**-9)   
             if Dict['Pass']:
                 S.append(SetCheck[Argmax])
+                self.indZ = np.array(S)
                 if len(S)==1:
                     self.Z = self.X[:,[SetCheck[Argmax]]]
+                    #self.indZ = np.array([SetCheck[Argmax]])
                 else:
                     self.Z = np.concatenate((self.Z,self.X[:,[SetCheck[Argmax]]]),axis=1)
+                    #self.indZ = np.hstack((self.Z,np.array([SetCheck[Argmax]])))
             else:
                 NotStop = False
         
@@ -1041,6 +1176,8 @@ class NetworkInference:
             Inds = np.setdiff1d(Sn,S[RP[i]])
             #print(Inds)
             Z = self.X[:,Inds]
+            self.indZ = Inds
+            self.indX = S[RP[i]]
             #if len(Inds)<=1:
             #    Z = self.X[:,[S[Inds]]]
             #else:
@@ -1049,7 +1186,10 @@ class NetworkInference:
             if Z.shape[1]==0:
                 self.Z = None
             Ent = self.Compute_CMI(X)
+            #T1 = time.time()
             Dict = self.Standard_Shuffle_Test_oCSE(X,Ent,self.Backward_oCSE_alpha)
+            #T2 = time.time()-T1
+            #print("This is how much time in shuffle test (backward): ",T2)
             if not Dict['Pass']:
                 Sn = np.setdiff1d(Sn,S[RP[i]])
             
@@ -1057,17 +1197,40 @@ class NetworkInference:
             
         
     def Standard_Shuffle_Test_oCSE(self,X,Ent,alpha):
+        self.Xshuffle = True
+        #print("This is Y shape: ", self.Y.shape)
         ns = self.Num_Shuffles_oCSE
         T = X.shape[0]
         Ents = np.zeros(ns)
         TupleX = X.shape
+        #print("This is X shape: ", TupleX)
         for i in range(ns):
             RP = np.random.permutation(T)
             if len(TupleX)>1:
                 Xshuff = X[RP,:]
             else:
                 Xshuff = X[RP]
+            #T1 = time.perf_counter_ns()
+            if self.Z is not None:
+                Size = np.sum([Xshuff.shape[1],self.Y.shape[1],self.Z.shape[1]])
+                Cat = np.concatenate((Xshuff,self.Y,self.Z),axis=1)
+                Arr = np.arange(Size)
+                self.shuffX = Arr[0:Xshuff.shape[1]]
+                self.shuffY = Arr[self.shuffX[-1]+1:Xshuff.shape[1]+self.Y.shape[1]]
+                self.shuffZ = Arr[self.shuffY[-1]+1:self.shuffY[-1]+Xshuff.shape[1]+self.Z.shape[1]]
+                #print("This is shuffZ: ", self.shuffZ)
+            else:
+                Size = np.sum([Xshuff.shape[1],self.Y.shape[1]])
+                Cat = np.concatenate((Xshuff,self.Y),axis=1)
+                Arr = np.arange(Size)
+                self.shuffX = Arr[0:Xshuff.shape[1]]
+                self.shuffY = Arr[self.shuffX[-1]+1:Xshuff.shape[1]+self.Y.shape[1]]
+                               
+            self.shuffCorr = np.corrcoef(Cat.T)
+            
             Ents[i] = self.Compute_CMI(Xshuff)
+            #print((time.perf_counter_ns()-T1)*10**-9) 
+        
         Prctile = int(100*np.floor(ns*(1-alpha))/ns)
         self.Prctile = Prctile
         #print(Ents)
@@ -1080,6 +1243,9 @@ class NetworkInference:
             Dict['Pass'] = True
         
         self.Dict = Dict
+        self.Xshuffle = False
+        
+        
         return Dict
     
     def Standard_oCSE(self):
@@ -1091,7 +1257,7 @@ class NetworkInference:
         
         if self.Y is None:
             raise ValueError("Missing the target(s) please add using set_Y")
-        
+              
         #Ensure initially Z is None
         self.Z = None
         
@@ -1099,13 +1265,18 @@ class NetworkInference:
         self.Correlation_XY = None
         
         #Find the initial set of potential predictors
+        
         S = self.Standard_Forward_oCSE()
+        #print("This is S: ", S)
+        
         self.Sinit = S
         
         #The final set of predictors after removing spurious edges
+        
         S = self.Standard_Backward_oCSE(S)
         
         self.Sfinal = S
+        #print(S)
         
         #Reset conditioning set in case other methods need it
         self.Z = None
@@ -1160,7 +1331,11 @@ class NetworkInference:
             for i in range(self.n):
                 print("Estimating edges for node number: ", i)
                 self.Y = XY_2[:,[i]]
+                self.indY = np.array([self.n])
                 self.X = XY_1
+                XY = np.hstack((self.X,self.Y))
+                self.bigCorr = np.corrcoef(XY.T)
+                self.indZ = None
                 S = self.Standard_oCSE()
                 B[i,S] = 1
                 
