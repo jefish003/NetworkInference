@@ -6,6 +6,7 @@ Created on Tue Apr 29 18:25:12 2025
 """
 
 from sklearn.neighbors import KernelDensity
+from sklearn.linear_model import LinearRegression
 import scipy as sp
 from scipy.spatial import distance
 from scipy.special import gamma as Gamma
@@ -68,7 +69,7 @@ class NetworkInference:
         self.Backward_oCSE_alpha = 0.02
         
         #Information Informed LASSO stuff
-        self.IIkfold = 5 #For crossfold validation when num data points small
+        self.IIkfold = 10 #For crossfold validation when num data points small
         self.II_InfCriterion = 'bic' #can be aic or bic, bic does better
         
         
@@ -1261,7 +1262,10 @@ class NetworkInference:
         self.Prctile = Prctile
         #print(Ents)
         #print(Ents[Ents>=np.percentile(Ents,Prctile)])
-        Threshold = np.min(Ents[Ents>=np.percentile(Ents,Prctile)])
+        try:
+            Threshold = np.min(Ents[Ents>=np.percentile(Ents,Prctile)])
+        except ValueError:
+            Threshold = 0
         Dict ={'Threshold':Threshold}
         Dict['Value'] = Ent
         Dict['Pass'] = False
@@ -1384,6 +1388,7 @@ class NetworkInference:
             B = np.zeros((self.n,self.n))
             for i in range(self.n):
                 print("Estimating edges for node number: ", i)
+                self.NodeNum = i
                 self.Y  = XY_2[:,[i]]
                 self.X = XY_1
                 self.indY = np.array([self.n])
@@ -1415,6 +1420,8 @@ class NetworkInference:
             Lass = LassoLarsIC(criterion=self.II_InfCriterion).fit(self.X, self.Y.flatten())  
         else:
             Lass = LassoCV(cv=self.IIkfold).fit(self.X, self.Y.flatten())
+            #est_var = self.estimate_noise_variance(Type='Lasso')
+            #Lass = LassoLarsIC(criterion=self.II_InfCriterion,noise_variance=est_var[0]).fit(self.X, self.Y.flatten())  
         S = np.where(Lass.coef_!=0)
         return S
     
@@ -1425,19 +1432,55 @@ class NetworkInference:
         for i in range(n):          
             self.indX = np.array([i])
             self.indZ = np.setdiff1d(Set,self.indX)
-            self.Z = self.X[:,self.indZ]
+            if self.X.shape[0]>n:
+                
+                self.Z = self.X[:,self.indZ]
+            else:
+                #rp =np.random.permutation(self.indZ)
+                #self.indZ = rp[0:self.X.shape[0]-2]
+                #self.Z = self.X[:,self.indZ]
+                #Xnew = self.X[:,[i]]
+                #self.indX = np.array([0])
+                #XY = np.hstack((Xnew,self.Z,self.Y))
+                #self.bigCorr = np.corrcoef(XY.T)
+                #shp = XY.shape[1]
+                #rng = np.arange(shp)
+                #self.indY = np.array([shp-1])
+                #self.indZ = rng[1:-1]
+                self.indZ = None
+                self.Z = None
+                
+                
+                
             CMI = self.Compute_CMI_Gaussian_Fast(self.X)
             if np.isnan(CMI) or np.isinf(CMI):
                 CMI = 1e-100
             self.CMI_matrix[i] = CMI
         
+        
         if self.X.shape[0]>n+1:
             LLIC = LassoLarsIC(criterion=self.II_InfCriterion).fit(self.X*self.CMI_matrix, self.Y.flatten())
         else:
             LLIC = LassoCV(cv=self.IIkfold).fit(self.X*self.CMI_matrix, self.Y.flatten())
+            #est_var = self.estimate_noise_variance()
+            #LLIC = LassoLarsIC(criterion=self.II_InfCriterion,noise_variance=est_var[0]).fit(self.X*self.CMI_matrix, self.Y.flatten())
         S = np.where(LLIC.coef_!=0)
+        #print(self.CMI_matrix)
         return S
     
+    def estimate_noise_variance(self,Type='LLIC'):
+        ols_model = LinearRegression()
+        if Type == 'LLIC':
+            ols_model.fit(self.X*self.CMI_matrix,self.Y)
+            y_pred = ols_model.predict(self.X*self.CMI_matrix)
+        elif Type == 'Lasso':
+            ols_model.fit(self.X,self.Y)
+            y_pred = ols_model.predict(self.X)            
+            
+        return np.sum((self.Y - y_pred) ** 2) / (
+            np.abs(self.X.shape[0] - self.X.shape[1]-ols_model.intercept_)
+            )
+        
     def return_CMI_Mat(self):
         return self.CMI_matrix
     
