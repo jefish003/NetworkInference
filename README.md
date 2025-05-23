@@ -56,7 +56,7 @@ B = NI.Estimate_Network()
 fit_time = time.time()-t
 print(fit_time)
 print(NI.Compute_TPR_FPR())
-'''
+```
 
 Generating synthetic data on a network and then estimating its network structure
 Currently you must supply the (dense) adjacency matrix of a network to generate synthetic data. There are several types of data currently available:
