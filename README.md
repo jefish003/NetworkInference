@@ -26,6 +26,38 @@ Once you have the above packages you will need to download NetworkInference.py t
 Documentation:
 (Note: there are numerous planned functionalities which are not active yet, but I have begun working on them, please ignore these).
 
+NEWLY ADDED - Parallelization, example code below:
+```
+import numpy as np
+import networkx as nx
+from NetworkInference import NetworkInference
+import time
+
+NI = NetworkInference()
+G = nx.erdos_renyi_graph(200,0.05)
+A = nx.adjacency_matrix(G)
+A = A.todense()
+NI.set_NetworkAdjacency(A)
+NI.set_T(500)
+NI.set_Rho(0.95)
+NI.Gen_Stochastic_Gaussian(Epsilon=1)
+Data = NI.return_XY()
+NI.set_Num_Shuffles_oCSE(200)
+NI.set_Forward_oCSE_alpha(0.005)
+NI.set_Backward_oCSE_alpha(0.005)
+#For parallelization
+#NOTE We can parallelize shuffles, but it does not appear to give performance gains yet...
+#NI.set_parallel_shuffles(True)
+NI.set_parallel_nodes(True)
+NI.set_num_processes(18)
+
+t = time.time()
+B = NI.Estimate_Network()
+fit_time = time.time()-t
+print(fit_time)
+print(NI.Compute_TPR_FPR())
+'''
+
 Generating synthetic data on a network and then estimating its network structure
 Currently you must supply the (dense) adjacency matrix of a network to generate synthetic data. There are several types of data currently available:
 -Gaussian stochastic process-
