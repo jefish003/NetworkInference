@@ -9,6 +9,7 @@ from sklearn.neighbors import KernelDensity
 from sklearn.linear_model import LinearRegression
 import scipy as sp
 from scipy.spatial import distance
+from scipy.spatial.distance import cdist
 from scipy.special import gamma as Gamma
 from scipy.special import digamma as Digamma
 from sklearn.linear_model import LassoLarsIC
@@ -67,7 +68,8 @@ class NetworkInference:
         self.InferenceMethod_oCSE = 'Gaussian'
         self.KernelBandWidth = None
         self.KernelType = 'gaussian'
-        self.KNN_K = None
+        self.KNN_K = 10
+        self.KNN_dist_metric = 'minkowski'
         self.Tau = int(1) #Tau is assumed to be 1 always but can be changed
         
         #oCSE stuff
@@ -108,6 +110,9 @@ class NetworkInference:
         self.FPR = None
         self.AUC = None
         self.Xshuffle = False
+    
+    def set_KNN_dist_metric(self,metric):
+        self.KNN_dist_metric = metric
     
     def set_parallel_nodes(self,truth_val):
         self.parallel_nodes = truth_val
@@ -265,6 +270,9 @@ class NetworkInference:
         
     def set_Rho(self,Rho):
         self.Rho = Rho
+    
+    def return_KNN_dist_metric(self):
+        return self.KNN_dist_metric
     
     def return_parallel_nodes(self):
         return self.parallel_nodes
@@ -450,6 +458,7 @@ class NetworkInference:
         Save_Dict['num_processes'] = self.num_processes
         Save_Dict['parallel_shuffles'] = self.parallel_shuffles
         Save_Dict['parallel_nodes'] = self.parallel_nodes
+        Save_Dict['KNN_dist_metric'] = self.KNN_dist_metric
         
         Date = datetime.datetime.today().strftime('%Y-%m-%d')
         F = glob.glob('NetworkInference_version_'+str(VersionNum)+'_Date_'+Date+'*.npz')
@@ -533,6 +542,7 @@ class NetworkInference:
         self.set_num_processes(Load_Dict['num_processes'])
         self.set_parallel_shuffles(Load_Dict['parallel_shuffles'])
         self.set_parallel_nodes(Load_Dict['parallel_nodes'])
+        self.set_KNN_dist_metric(Load_Dict['KNN_dist_metric'])
     
     def nchoosek(self,n,k):
         Range = range(1,n+1)
@@ -895,52 +905,116 @@ class NetworkInference:
             BandWidth = self.KernelBandWidth
         
         kde = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(X)
-    
-        
-    def MutualInfo_KNN(self,X,Y):
-        """The Max Norm version of the Kraskov, Stogbauer, Grassberger (KSG) K-
-        nearest neighbors mutual information from the paper: 
-            Estimating mutual information"""
-        if self.KNN_K is None:
-            print("Warning KNN_K was set to None, for KNN the default is k=10")
-            print()
-            print("If you wish to change this behavior please manually set using set_KNN_K")
-            self.KNN_K=10 
             
-        k = int(self.KNN_K)
-        N = X.shape[0]
-        DistX = distance.pdist(X)
-        DistY = distance.pdist(Y)
-        DistXY = np.zeros(len(DistX))
-        Wh1 = np.where((DistX-DistY)>=0)
-        Wh2 = np.where((DistX-DistY)<0)
-        DistXY[Wh1] = DistX[Wh1]
-        DistXY[Wh2] = DistY[Wh2]
-        DistX = distance.squareform(DistX)
-        DistY = distance.squareform(DistY)
-        DistXY = distance.squareform(DistXY)
-        AS = DistXY.argsort(axis=0)[k]
-        Term1 = Digamma(N)+Digamma(k)
-        Inner2X = np.sum(DistX<DistXY[AS[np.arange(N)],[np.arange(N)]].reshape(N,1),axis=0)+1
-        Inner2Y = np.sum(DistY<DistXY[AS[np.arange(N)],[np.arange(N)]].reshape(N,1),axis=0)+1
-        Term2 = np.mean(Digamma(Inner2X)+Digamma(Inner2Y))
+    
+    def MutualInfo_KNN(self,X,Y):
+        #construct the joint space
+        n = X.shape[0]
+        JS = np.column_stack((X,Y))
+        #n = JS.shape[0]
+        #Find the K^th smallest distance in the joint space
+        D = np.sort(cdist(JS,JS,metric=self.KNN_dist_metric,p=self.KNN_K+1),axis=1)[:,self.KNN_K]
+        epsilon = D
         
-        return Term1-Term2
         
+        #Count neighbors within epsilon in marginal spaces
+        Dx = cdist(X, X, metric = self.KNN_dist_metric)
+        nx = np.sum(Dx < epsilon[:,None], axis=1)-1
+        Dy = cdist(Y, Y, metric = self.KNN_dist_metric)
+        ny = np.sum(Dy<epsilon[:,None], axis=1)-1
+        
+        #KSG Estimation formula
+        I1a = Digamma(self.KNN_K) 
+        I1b = Digamma(n)
+        I1 = I1a+I1b
+        I2 = - np.mean(Digamma(nx+1)+Digamma(ny+1))
+        return I1+I2
+    
+    def Compute_CMI_KNN_v2(self,X):
+        if self.Z is None:
+            return self.MutualInfo_KNN(X,self.Y)
+        # Construct the joint space
+        JS = np.column_stack((X,self.Y,self.Z))
+        # Find the K^th smallest distance in the joint space
+        D = np.sort(cdist(JS, JS, metric=self.KNN_dist_metric,p=self.KNN_K+1), axis=1)[:, self.KNN_K]
+        epsilon = D
+        # Count neighbors within epsilon in marginal spaces
+        Dxz = cdist(np.column_stack((X, self.Z)), np.column_stack((X, self.Z)), metric=self.KNN_dist_metric)
+        nxz = np.sum(Dxz < epsilon[:, None], axis=1) - 1    
+        Dyz = cdist(np.column_stack((self.Y, self.Z)), np.column_stack((self.Y, self.Z)), metric=self.KNN_dist_metric)
+        nyz = np.sum(Dyz < epsilon[:, None], axis=1) - 1
+        Dz = cdist(self.Z, self.Z, metric=self.KNN_dist_metric)
+        nz = np.sum(Dz < epsilon[:, None], axis=1) - 1
+        # VP Estimation formula
+        I = Digamma(self.KNN_K) - np.mean(Digamma(nxz + 1) + Digamma(nyz + 1) - Digamma(nz + 1))
+        return I
+    
+    
     def Compute_CMI_KNN(self,X):
         """KNN version of Conditional mutual information for Causation
         entropy..."""
         if self.Z is None:
-            return np.max([self.MutualInfo_KNN(X,self.Y),0])
+            return self.MutualInfo_KNN(X,self.Y)#np.max([self.MutualInfo_KNN(X,self.Y),0])
         else:
             XcatY = np.concatenate((X,self.Y),axis=1)
             MIXYZ = self.MutualInfo_KNN(XcatY,self.Z)
             MIXY = self.MutualInfo_KNN(X,self.Y)
            
-            return np.max([MIXY-MIXYZ,0])        
- 
+            return MIXY-MIXYZ#np.max([MIXY-MIXYZ,0])        
 
-    def Entropy_GKNN(self,X):
+    def l2dist(self,a, b):
+        return np.linalg.norm(a - b)
+
+    def hyperellipsoid_check(self,svd_Yi, Z_i):
+        # Check if Z_i lies within the hyperellipsoid defined by svd_Yi
+        U, S, Vt = svd_Yi
+        transformed = np.dot(Z_i, Vt.T) / S
+        return np.sum(transformed**2) <= 1
+
+    def Entropy_GKNN(self,X, k,Xdist):
+        k = self.KNN_K
+        N, d = X.shape
+        Xknn = np.zeros((N, k), dtype=int)
+    
+        for i in range(N):
+            Xknn[i, :] = np.argsort(Xdist[i, :])[1:k+1]
+        H_X = np.log(N) + np.log(np.pi**(d/2) / Gamma(1 + d/2))
+        H_X += d / N * np.sum([np.log(self.l2dist(X[i, :], X[Xknn[i, k-1], :])) for i in range(N)])
+        H_X += 1 / N * np.sum([-np.log(max(1, np.sum([self.hyperellipsoid_check(np.linalg.svd(Y_i), Z_i[j, :]) for j in range(k)])))
+            + np.sum([np.log(sing_Yi[l] / sing_Yi[0]) for l in range(d)])
+        for i in range(N)
+        for Y_i in [X[np.append([i], Xknn[i, :]), :] - np.mean(X[np.append([i], Xknn[i, :]), :], axis=0)]
+        for svd_Yi in [np.linalg.svd(Y_i)]
+        for sing_Yi in [svd_Yi[1]]
+        for Z_i in [X[Xknn[i, :], :] - X[i, :]]
+    ])
+        return H_X
+
+    def MI_GKNN(self,X, Y):
+        Xdist = cdist(X, X, metric='euclidean')
+        Ydist = cdist(Y, Y, metric='euclidean')
+        XYdist = cdist(np.hstack((X, Y)), np.hstack((X, Y)), metric='euclidean')
+    
+        HX = self.Entropy_GKNN(X, self.KNN_K, Xdist)
+        HY = self.Entropy_GKNN(Y, self.KNN_K, Ydist)
+        HXY = self.Entropy_GKNN(np.hstack((X, Y)), self.KNN_K, XYdist)
+    
+        return HX + HY - HXY    
+    
+    def Compute_CMI_Geometric_KNN(self,X):
+        if self.Z is None:
+            return self.MI_GKNN(X,self.Y)
+        YZdist = cdist(np.hstack((self.Y, self.Z)), np.hstack((self.Y, self.Z)), metric='euclidean')
+        XZdist = cdist(np.hstack((X, self.Z)), np.hstack((X, self.Z)), metric='euclidean')
+        XYZdist = cdist(np.hstack((X, self.Y,self.Z)), np.hstack((X, self.Y,self.Z)), metric='euclidean')
+        Zdist = cdist(self.Z, self.Z, metric='euclidean')
+        HZ = self.Entropy_GKNN(self.Z, self.KNN_K, Zdist)
+        HXZ = self.Entropy_GKNN(np.hstack((X, self.Z)), self.KNN_K, XZdist)
+        HYZ = self.Entropy_GKNN(np.hstack((self.Y, self.Z)), self.KNN_K, YZdist)
+        HXYZ = self.Entropy_GKNN(np.hstack((X, self.Y,self.Z)), self.KNN_K, XYZdist)
+        return HXZ+HYZ-HXYZ-HZ
+
+    def Entropy_GKNN_old(self,X):
         """An implementation of Geometric KNN from Lord, Sun and Bollt's paper:
             Geometric k-nearest neighbor estimation of entropy and mutual information """
         if self.KNN_K is None:
@@ -1012,7 +1086,7 @@ class NetworkInference:
         #print("Here is term1,3 and 2: ",Term1,Term3,Term2)
         return Term1-Term2+Term3
     
-    def Compute_CMI_Geometric_KNN(self,X):
+    def Compute_CMI_Geometric_KNN_old(self,X):
         """Geometric KNN version of Conditional mutual information for Causation
         entropy..."""
         if self.Z is None:
