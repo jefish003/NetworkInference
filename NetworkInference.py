@@ -22,9 +22,11 @@ import glob
 from matplotlib import pyplot as plt
 from matplotlib import rc
 import time
+from joblib import Parallel, delayed
+import multiprocessing
 
 """Written by Jeremie Fish, 
-   Last Update: April 15th 2025
+   Last Update: May 22nd 2025
    
    Depending on method used please cite the appropriate papers..."""
 
@@ -34,6 +36,11 @@ class NetworkInference:
         
         #Version 
         self.VersionNum = 0.2
+        
+        #for potential multiprocessing
+        self.num_processes = np.max([multiprocessing.cpu_count()-1,1]) #default to cpus-1 unless only 1 cpu...
+        self.parallel_shuffles = False 
+        self.parallel_nodes = False
         
         #Time series stuff
         self.n = 100
@@ -71,7 +78,7 @@ class NetworkInference:
         #Information Informed LASSO stuff
         self.IIkfold = 10 #For crossfold validation when num data points small
         self.II_InfCriterion = 'bic' #can be aic or bic, bic does better
-        
+        self.max_num_lambdas = 100
         
         
         #Miscellaneous
@@ -101,6 +108,15 @@ class NetworkInference:
         self.FPR = None
         self.AUC = None
         self.Xshuffle = False
+    
+    def set_parallel_nodes(self,truth_val):
+        self.parallel_nodes = truth_val
+    
+    def set_parallel_shuffles(self,truth_val):
+        self.parallel_shuffles = truth_val
+    
+    def set_num_processes(self,num):
+        self.num_processes = num
         
     def set_II_InfCriterion(self,criterion):
         """Should be a string either 'aic' or 'bic' the only two options """
@@ -249,6 +265,15 @@ class NetworkInference:
         
     def set_Rho(self,Rho):
         self.Rho = Rho
+    
+    def return_parallel_nodes(self):
+        return self.parallel_nodes
+    
+    def return_parallel_shuffles(self):
+        return self.parallel_shuffles
+    
+    def return_num_processes(self):
+        return self.num_processes
     
     def return_Xshuffle(self):
         return self.Xshuffle
@@ -422,6 +447,9 @@ class NetworkInference:
         Save_Dict['Xshuffle'] = self.Xshuffle
         Save_Dict['IIkfold'] = self.IIkfold
         Save_Dict['II_InfCriterion'] = self.II_InfCriterion
+        Save_Dict['num_processes'] = self.num_processes
+        Save_Dict['parallel_shuffles'] = self.parallel_shuffles
+        Save_Dict['parallel_nodes'] = self.parallel_nodes
         
         Date = datetime.datetime.today().strftime('%Y-%m-%d')
         F = glob.glob('NetworkInference_version_'+str(VersionNum)+'_Date_'+Date+'*.npz')
@@ -502,6 +530,9 @@ class NetworkInference:
         self.set_Xshuffle(Load_Dict['Xshuffle'])
         self.set_IIkfold(Load_Dict['IIkfold'])
         self.set_II_InfCriterion(Load_Dict['II_InfCriterion'])
+        self.set_num_processes(Load_Dict['num_processes'])
+        self.set_parallel_shuffles(Load_Dict['parallel_shuffles'])
+        self.set_parallel_nodes(Load_Dict['parallel_nodes'])
     
     def nchoosek(self,n,k):
         Range = range(1,n+1)
@@ -904,9 +935,9 @@ class NetworkInference:
         else:
             XcatY = np.concatenate((X,self.Y),axis=1)
             MIXYZ = self.MutualInfo_KNN(XcatY,self.Z)
-            MIXZ = self.MutualInfo_KNN(X,self.Z)
+            MIXY = self.MutualInfo_KNN(X,self.Y)
            
-            return np.max([MIXYZ-MIXZ,0])        
+            return np.max([MIXY-MIXYZ,0])        
  
 
     def Entropy_GKNN(self,X):
@@ -1139,7 +1170,10 @@ class NetworkInference:
                    
             Argmax = Ents.argmax()
             X = self.X[:,[SetCheck[Argmax]]]
-            Dict = self.Standard_Shuffle_Test_oCSE(X,Ents[Argmax],self.Forward_oCSE_alpha)
+            if not self.parallel_shuffles:
+                Dict = self.Standard_Shuffle_Test_oCSE(X,Ents[Argmax],self.Forward_oCSE_alpha)
+            else:
+                Dict = self.Parallel_Shuffle_Test_oCSE(X,Ents[Argmax],self.Forward_oCSE_alpha)
                
             if Dict['Pass']:
                 S.append(SetCheck[Argmax])
@@ -1174,7 +1208,10 @@ class NetworkInference:
                 X = self.X[:,[SetCheck[i]]]
                 
                 Ents[i] = self.Compute_CMI(X)
-                Dict = self.Standard_Shuffle_Test_oCSE(X,Ents[i],self.Forward_oCSE_alpha)
+                if not self.parallel_shuffles:
+                    Dict = self.Standard_Shuffle_Test_oCSE(X,Ents[i],self.Forward_oCSE_alpha)
+                else:
+                    Dict = self.Parallel_Shuffle_Test_oCSE(X,Ents[i],self.Forward_oCSE_alpha)
                 Passes[i] = Dict['Pass']
             
             NewEnts = Ents[Passes]
@@ -1214,7 +1251,10 @@ class NetworkInference:
                 self.Z = None
             Ent = self.Compute_CMI(X)
             #T1 = time.time()
-            Dict = self.Standard_Shuffle_Test_oCSE(X,Ent,self.Backward_oCSE_alpha)
+            if not self.parallel_shuffles:
+                Dict = self.Standard_Shuffle_Test_oCSE(X,Ent,self.Backward_oCSE_alpha)
+            else:
+                Dict = self.Parallel_Shuffle_Test_oCSE(X,Ent,self.Backward_oCSE_alpha)
             #T2 = time.time()-T1
             #print("This is how much time in shuffle test (backward): ",T2)
             if not Dict['Pass']:
@@ -1222,7 +1262,64 @@ class NetworkInference:
             
         return Sn
             
+    
+    def Parallel_input_function(self,X,T,TupleX):
+        RP = np.random.permutation(T)
+        if len(TupleX)>1:
+            Xshuff = X[RP,:]
+        else:
+            Xshuff = X[RP]
+        #T1 = time.perf_counter_ns()
+        if self.Z is not None:
+            Size = np.sum([Xshuff.shape[1],self.Y.shape[1],self.Z.shape[1]])
+            Cat = np.concatenate((Xshuff,self.Y,self.Z),axis=1)
+            Arr = np.arange(Size)
+            self.shuffX = Arr[0:Xshuff.shape[1]]
+            self.shuffY = Arr[self.shuffX[-1]+1:Xshuff.shape[1]+self.Y.shape[1]]
+            self.shuffZ = Arr[self.shuffY[-1]+1:self.shuffY[-1]+Xshuff.shape[1]+self.Z.shape[1]]
+            #print("This is shuffZ: ", self.shuffZ)
+        else:
+            Size = np.sum([Xshuff.shape[1],self.Y.shape[1]])
+            Cat = np.concatenate((Xshuff,self.Y),axis=1)
+            Arr = np.arange(Size)
+            self.shuffX = Arr[0:Xshuff.shape[1]]
+            self.shuffY = Arr[self.shuffX[-1]+1:Xshuff.shape[1]+self.Y.shape[1]]
+                           
+        self.shuffCorr = np.corrcoef(Cat.T)
         
+        return self.Compute_CMI(Xshuff)    
+    
+    def Parallel_Shuffle_Test_oCSE(self,X,Ent,alpha):
+        self.Xshuffle = True
+        #print("This is Y shape: ", self.Y.shape)
+        ns = self.Num_Shuffles_oCSE
+        T = X.shape[0]
+        #Ents = np.zeros(ns)
+        TupleX = X.shape
+        #print("This is X shape: ", TupleX)
+        Ents = Parallel(n_jobs=self.num_processes)(delayed(self.Parallel_input_function)(X, T, TupleX) for i in range(ns))
+        Ents = np.array(Ents)
+        Prctile = int(100*np.floor(ns*(1-alpha))/ns)
+        self.Prctile = Prctile
+        #print(Ents)
+        #print(Ents[Ents>=np.percentile(Ents,Prctile)])
+        try:
+            Threshold = np.min(Ents[Ents>=np.percentile(Ents,Prctile)])
+        except ValueError:
+            Threshold = 0
+        Dict ={'Threshold':Threshold}
+        Dict['Value'] = Ent
+        Dict['Pass'] = False
+        if Ent>=Threshold:
+            Dict['Pass'] = True
+        
+        self.Dict = Dict
+        self.Xshuffle = False
+        
+        
+        return Dict
+            
+    
     def Standard_Shuffle_Test_oCSE(self,X,Ent,alpha):
         self.Xshuffle = True
         #print("This is Y shape: ", self.Y.shape)
@@ -1343,6 +1440,40 @@ class NetworkInference:
         
         return S
     
+    def par_nodes_oCSE(self,XY_1,XY_2,i):
+        self.Y = XY_2[:,[i]]
+        self.indY = np.array([self.n])
+        self.X = XY_1
+        XY = np.hstack((self.X,self.Y))
+        self.bigCorr = np.corrcoef(XY.T)
+        self.indZ = None
+        S = self.Standard_oCSE()
+        
+        return S
+    
+    def par_nodes_alternative_oCSE(self,XY_1,XY_2,i):
+        self.Y  = XY_2[:,[i]]
+        self.X = XY_1
+        S = self.Alternative_oCSE() 
+        return S
+    
+    def par_nodes_iil(self,XY_1,XY_2,i):
+        self.NodeNum = i
+        self.Y  = XY_2[:,[i]]
+        self.X = XY_1
+        self.indY = np.array([self.n])
+        XY = np.hstack((self.X,self.Y))
+        self.bigCorr = np.corrcoef(XY.T)                
+        S = self.II_Lasso()
+        return S
+    
+    def par_nodes_lasso(self,XY_1,XY_2,i):
+        self.Y  = XY_2[:,[i]]
+        self.X = XY_1
+        S = self.Lasso()
+        return S
+
+                
     def Estimate_Network(self):
         #Initialize...
         self.Y = None
@@ -1358,55 +1489,80 @@ class NetworkInference:
             XY_1 = XY[0:self.T-self.Tau,:]
             XY_2 = XY[self.Tau:,:]
             B = np.zeros((self.n,self.n))
-            for i in range(self.n):
-                print("Estimating edges for node number: ", i)
-                self.Y = XY_2[:,[i]]
-                self.indY = np.array([self.n])
-                self.X = XY_1
-                XY = np.hstack((self.X,self.Y))
-                self.bigCorr = np.corrcoef(XY.T)
-                self.indZ = None
-                S = self.Standard_oCSE()
-                B[i,S] = 1
+            if not self.parallel_nodes:
+                for i in range(self.n):
+                    print("Estimating edges for node number: ", i)
+                    self.Y = XY_2[:,[i]]
+                    self.indY = np.array([self.n])
+                    self.X = XY_1
+                    XY = np.hstack((self.X,self.Y))
+                    self.bigCorr = np.corrcoef(XY.T)
+                    self.indZ = None
+                    S = self.Standard_oCSE()
+                    B[i,S] = 1
+            else:
+                print("Estimating in parallel with ", self.num_processes, " processes.")
+                results = Parallel(n_jobs=self.num_processes,verbose=11)(delayed(self.par_nodes_oCSE)(XY_1, XY_2, i) for i in range(self.n))
+                for i in range(len(results)):
+                    B[i,results[i]] = 1
                 
         elif Method=='Alternative_oCSE':
             XY = self.XY
             XY_1 = XY[0:self.T-self.Tau,:]
             XY_2 = XY[self.Tau:,:]
             B = np.zeros((self.n,self.n))
-            for i in range(self.n):
-                print("Estimating edges for node number: ", i)
-                self.Y  = XY_2[:,[i]]
-                self.X = XY_1
-                S = self.Alternative_oCSE()
-                B[i,S] = 1
+            if not self.parallel_nodes:
+                for i in range(self.n):
+                    print("Estimating edges for node number: ", i)
+                    self.Y  = XY_2[:,[i]]
+                    self.X = XY_1
+                    S = self.Alternative_oCSE()
+                    B[i,S] = 1
+            else:
+                print("Estimating in parallel with ", self.num_processes, " processes.")
+                results = Parallel(n_jobs=self.num_processes,verbose=11)(delayed(self.par_nodes_alternative_oCSE)(XY_1, XY_2, i) for i in range(self.n))
+                for i in range(len(results)):
+                    B[i,results[i]] = 1                
         
         elif Method=='InformationInformed_LASSO':
             XY = self.XY
             XY_1 = XY[0:self.T-self.Tau,:]
             XY_2 = XY[self.Tau:,:]
             B = np.zeros((self.n,self.n))
-            for i in range(self.n):
-                print("Estimating edges for node number: ", i)
-                self.NodeNum = i
-                self.Y  = XY_2[:,[i]]
-                self.X = XY_1
-                self.indY = np.array([self.n])
-                XY = np.hstack((self.X,self.Y))
-                self.bigCorr = np.corrcoef(XY.T)                
-                S = self.II_Lasso()
-                B[i,S] = 1            
+            if not self.parallel_nodes:
+                for i in range(self.n):
+                    print("Estimating edges for node number: ", i)
+                    self.NodeNum = i
+                    self.Y  = XY_2[:,[i]]
+                    self.X = XY_1
+                    self.indY = np.array([self.n])
+                    XY = np.hstack((self.X,self.Y))
+                    self.bigCorr = np.corrcoef(XY.T)                
+                    S = self.II_Lasso()
+                    B[i,S] = 1 
+            else:
+                print("Estimating in parallel with ", self.num_processes, " processes.")
+                results = Parallel(n_jobs=self.num_processes,verbose=11)(delayed(self.par_nodes_iil)(XY_1, XY_2, i) for i in range(self.n))
+                for i in range(len(results)):
+                    B[i,results[i]] = 1                
+                        
         elif Method=='LASSO':
             XY = self.XY
             XY_1 = XY[0:self.T-self.Tau,:]
             XY_2 = XY[self.Tau:,:]
             B = np.zeros((self.n,self.n))
-            for i in range(self.n):
-                print("Estimating edges for node number: ", i)
-                self.Y  = XY_2[:,[i]]
-                self.X = XY_1
-                S = self.Lasso()
-                B[i,S] = 1                 
+            if not self.parallel_nodes:
+                for i in range(self.n):
+                    print("Estimating edges for node number: ", i)
+                    self.Y  = XY_2[:,[i]]
+                    self.X = XY_1
+                    S = self.Lasso()
+                    B[i,S] = 1        
+            else:
+                print("Estimating in parallel with ", self.num_processes, " processes.")
+                results = Parallel(n_jobs=self.num_processes,verbose=11)(delayed(self.par_nodes_lasso)(XY_1, XY_2, i) for i in range(self.n))
+                for i in range(len(results)):
+                    B[i,results[i]] = 1                     
         else:
             #Do nothing
             B = []
@@ -1417,9 +1573,12 @@ class NetworkInference:
     def Lasso(self):
         n = self.n
         if self.X.shape[0]>n+1:
-            Lass = LassoLarsIC(criterion=self.II_InfCriterion).fit(self.X, self.Y.flatten())  
+            Lass = LassoLarsIC(criterion=self.II_InfCriterion,max_iter=self.max_num_lambdas).fit(self.X, self.Y.flatten())  
         else:
-            Lass = LassoCV(cv=self.IIkfold).fit(self.X, self.Y.flatten())
+            if not self.parallel_nodes:
+                Lass = LassoCV(cv=self.IIkfold,n_alphas=self.max_num_lambdas).fit(self.X, self.Y.flatten())
+            else:
+                Lass = LassoCV(cv=self.IIkfold,n_alphas=self.max_num_lambdas,n_jobs=self.num_processes).fit(self.X, self.Y.flatten())
             #est_var = self.estimate_noise_variance(Type='Lasso')
             #Lass = LassoLarsIC(criterion=self.II_InfCriterion,noise_variance=est_var[0]).fit(self.X, self.Y.flatten())  
         S = np.where(Lass.coef_!=0)
@@ -1459,9 +1618,12 @@ class NetworkInference:
         
         
         if self.X.shape[0]>n+1:
-            LLIC = LassoLarsIC(criterion=self.II_InfCriterion).fit(self.X*self.CMI_matrix, self.Y.flatten())
+            LLIC = LassoLarsIC(criterion=self.II_InfCriterion,max_iter=self.max_num_lambdas).fit(self.X*self.CMI_matrix, self.Y.flatten())
         else:
-            LLIC = LassoCV(cv=self.IIkfold).fit(self.X*self.CMI_matrix, self.Y.flatten())
+            if not self.parallel_nodes:
+                LLIC = LassoCV(cv=self.IIkfold,n_alphas=self.max_num_lambdas).fit(self.X*self.CMI_matrix, self.Y.flatten())
+            else:
+                LLIC = LassoCV(cv=self.IIkfold,n_alphas=self.max_num_lambdas,n_jobs=self.num_processes).fit(self.X*self.CMI_matrix, self.Y.flatten())                
             #est_var = self.estimate_noise_variance()
             #LLIC = LassoLarsIC(criterion=self.II_InfCriterion,noise_variance=est_var[0]).fit(self.X*self.CMI_matrix, self.Y.flatten())
         S = np.where(LLIC.coef_!=0)
