@@ -17,7 +17,9 @@ itertools,
 copy,
 datetime,
 glob,
-matplotlib.
+matplotlib,
+multiprocessing,
+joblib.
 
 This code has been tested on python 3.8+, so earlier versions of python may not work (as some functionalities in the libraries may not have existed in prior versions), so you may try python 3.7 or earlier at your own risk.
 
@@ -26,7 +28,9 @@ Once you have the above packages you will need to download NetworkInference.py t
 Documentation:
 (Note: there are numerous planned functionalities which are not active yet, but I have begun working on them, please ignore these).
 
-NEWLY ADDED - Parallelization, example code below:
+v0.2 included bug fixes as well. 
+
+NEWLY ADDED in v0.2 - Parallelization, example code below:
 ```
 import numpy as np
 import networkx as nx
@@ -57,6 +61,34 @@ fit_time = time.time()-t
 print(fit_time)
 print(NI.Compute_TPR_FPR())
 ```
+NEWLY ADDED in v0.2 - Ability to return the causation entropy values under a variety of circumstances, below is an example. What is returned is either conditioned on the already known edges, or conditioned on all of the nodes except the one being tested against- 
+more options to follow. 
+
+```
+import numpy as np
+import networkx as nx
+from NetworkInference import NetworkInference
+import time
+
+NI = NetworkInference()
+G = nx.erdos_renyi_graph(200,0.05)
+A = nx.adjacency_matrix(G)
+A = A.todense()
+NI.set_NetworkAdjacency(A)
+NI.set_T(1000)
+NI.set_Rho(0.95)
+NI.Gen_Stochastic_Gaussian(Epsilon=1)
+Data = NI.return_XY()
+#Return based on a network of known edges
+NI.set_conditional_returns_set('existing_edges')
+D = NI.conditional_returns()
+
+#Return based on conditioning on everything but the pair that you are testing.
+NI.set_conditional_returns_set('all_but_one')
+D2 = NI.conditional_returns()
+
+```
+
 
 Generating synthetic data on a network and then estimating its network structure
 Currently you must supply the (dense) adjacency matrix of a network to generate synthetic data. There are several types of data currently available:
