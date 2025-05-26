@@ -38,6 +38,9 @@ class NetworkInference:
         #Version 
         self.VersionNum = 0.2
         
+        #conditional (causation entropy) return stuff
+        self.conditional_returns_set = 'existing_edges'
+        
         #for potential multiprocessing
         self.num_processes = np.max([multiprocessing.cpu_count()-1,1]) #default to cpus-1 unless only 1 cpu...
         self.parallel_shuffles = False 
@@ -111,6 +114,9 @@ class NetworkInference:
         self.AUC = None
         self.Xshuffle = False
     
+    def set_conditional_returns_set(self,cond_ret_type):
+        self.conditional_returns_set = cond_ret_type
+          
     def set_KNN_dist_metric(self,metric):
         self.KNN_dist_metric = metric
     
@@ -270,6 +276,9 @@ class NetworkInference:
         
     def set_Rho(self,Rho):
         self.Rho = Rho
+        
+    def return_conditional_returns_set(self):
+        return self.conditional_returns_set        
     
     def return_KNN_dist_metric(self):
         return self.KNN_dist_metric
@@ -459,7 +468,8 @@ class NetworkInference:
         Save_Dict['parallel_shuffles'] = self.parallel_shuffles
         Save_Dict['parallel_nodes'] = self.parallel_nodes
         Save_Dict['KNN_dist_metric'] = self.KNN_dist_metric
-        
+        Save_Dict['conditional_returns_set'] = self.condtional_returns_set
+    
         Date = datetime.datetime.today().strftime('%Y-%m-%d')
         F = glob.glob('NetworkInference_version_'+str(VersionNum)+'_Date_'+Date+'*.npz')
         num = len(F)+1
@@ -543,6 +553,7 @@ class NetworkInference:
         self.set_parallel_shuffles(Load_Dict['parallel_shuffles'])
         self.set_parallel_nodes(Load_Dict['parallel_nodes'])
         self.set_KNN_dist_metric(Load_Dict['KNN_dist_metric'])
+        self.set_conditional_returns_set(Load_Dict['conditional_returns_set'])
     
     def nchoosek(self,n,k):
         Range = range(1,n+1)
@@ -1547,7 +1558,48 @@ class NetworkInference:
         S = self.Lasso()
         return S
 
+    
+    def conditional_returns(self):
+        if self.NetworkAdjacency is None:
+            raise ValueError("Adjacency matrix must be added to run conditional_returns. Use set_NetworkAdjacency")
+        
+        A = self.NetworkAdjacency
+        XY = self.XY
+        XY_1 = XY[0:self.T-self.Tau,:]
+        XY_2 = XY[self.Tau:,:]
+        
+        Conditionals = {}
+        Conditionals['Order'] = '(i_(t+tau),j_t)'
+        for i in range(self.n):
+            print("Estimating conditionals for edges in node number: ",i)
+            self.Y = XY_2[:,[i]]
+            self.indY = np.array([self.n])
+            self.X = XY_1
+            XY = np.hstack((self.X,self.Y))
+            self.bigCorr = np.corrcoef(XY.T)
+
+            for j in range(self.n):
+                if self.conditional_returns_set == 'existing_edges':
+                    Set = np.where(A[i,:]==1)
+                    self.indZ = Set[0]
+                elif self.conditional_returns_set == 'all_but_one':
+                    Set = np.setdiff1d(np.arange(self.n),np.array([j]))
+                    self.indZ = Set
                 
+                else:
+                    raise ValueError("conditional_returns_set must be one of the following: 'existing_edges', 'all_but_one'")
+                
+                self.Z = XY[:,self.indZ]
+                X = self.XY[:,j]
+                self.indX = np.array([j])
+                Ent = self.Compute_CMI(X)
+                InnerCond = {}
+                InnerCond['CondSet'] = self.indZ
+                InnerCond['CauseEnt'] = Ent
+                Conditionals[(i,j)] = InnerCond
+        
+        return Conditionals
+            
     def Estimate_Network(self):
         #Initialize...
         self.Y = None
