@@ -63,7 +63,7 @@ print(fit_time)
 print(NI.Compute_TPR_FPR())
 ```
 NEWLY ADDED in v0.2 - Ability to return the causation entropy values under a variety of circumstances, below is an example. What is returned is either conditioned on the already known edges, or conditioned on all of the nodes except the one being tested against- 
-more options to follow. 
+more options to follow. D and D2 are dictionaries with the causation entropies stored. To determine the causation entropy between nodes 0 and 1 (0 is taken as time values in the future, 1 with time values a time Tau in the past, you may set Tau to other values using set_Tau), conditioned on all of the edges in the graph that has been supplied (can be set in set_NetworkAdjacency) then D[(0,1)]['CauseEnt'] is what you are looking for, if you are curious about what the conditioning set is D[(0,1)]['CondSet']. 
 
 ```
 import numpy as np
