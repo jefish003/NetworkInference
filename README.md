@@ -31,7 +31,7 @@ Documentation:
 
 v0.2 included bug fixes as well. 
 
-NEWLY ADDED in v0.2 - Parallelization, example code below:
+NEWLY ADDED in v0.2 - Parallelization, example code below. Note that if you do not use set_num_processes then the number of processes is automatically set to the max[# threads -1, 1] (so we don't set number of processes to 0). 
 ```
 import numpy as np
 import networkx as nx
