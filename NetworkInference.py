@@ -655,7 +655,13 @@ class NetworkInference:
         return X
         
     def Gen_Stochastic_Poisson_Pedeli(self,noiseLevel=0):
-        """Stochastic Poisson process FROM THE PEDELI PAPER!!!!!"""
+        """Stochastic Poisson process -
+        Structure comes from the paper:
+            'Some properties of multivariate INAR(1) processes'
+            
+        By Pedeli and Karlis
+        
+        """
            
         if self.NetworkAdjacency is None:
             raise ValueError("Missing adjacency matrix, please add this using set_NetworkAdjacency")
@@ -902,21 +908,81 @@ class NetworkInference:
     
     def Compute_CMI_Histogram(self,X):
         Blah = 1
-    
-    def Compute_CMI_KernelDensity(self,X):
         
+    
+    def Compute_Entropy_KernelDensity(self,X):
         if self.KernelBandWidth is None:
-            #This is approximately the optimal bandwidth according to
-            #the rule of thumb in "Optimal Bandwidth Selection for Kernel Density Functionals Estimation"
-            #By Su Chen for the Guassian Kernal
-            BandWidth = 1.515717*self.T**(-2/5)
-            if self.DataType == 'Discrete':
-                BandWidth = 1+BandWidth
+            #This is approximately the optimal bandwidth according to Silverman
+            
+            BandWidth = 'silverman'
+        else:
+            BandWidth = self.KernelBandWidth        
+        kdeX = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(X)
+        densityX = np.exp(kdeX.score_samples(X))
+        Hx = -np.sum(np.log(densityX))/len(densityX)
+        return Hx        
+    
+    def Compute_MI_KernelDensity(self,X):
+        if self.KernelBandWidth is None:
+            #This is approximately the optimal bandwidth according to Silverman
+            
+            BandWidth = 'silverman'
         else:
             BandWidth = self.KernelBandWidth
         
-        kde = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(X)
+        XY = np.hstack((X,self.Y))
+        #Set up the kde computation
+        kdeX = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(X)
+        kdeY = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(self.Y)
+        kdeXY = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(XY)  
+        #Get the densities
+        densityX = np.exp(kdeX.score_samples(X))
+        densityY = np.exp(kdeY.score_samples(self.Y))
+        densityXY = np.exp(kdeXY.score_samples(XY))  
+        #Compute the entropies
+        Hx = -np.sum(np.log(densityX))/len(densityX)
+        Hy = -np.sum(np.log(densityY))/len(densityY)
+        Hxy = -np.sum(np.log(densityXY))/len(densityXY)
+        
+        return Hx+Hy-Hxy
+        
+    
+    def Compute_CMI_KernelDensity(self,X):
+        
+        if self.Z is None:
+            I = self.Compute_MI_KernelDensity(X)
+        else:
+            if self.KernelBandWidth is None:
+                #This is approximately the optimal bandwidth according to Silverman
+    
+                BandWidth = 'silverman'
+            else:
+                BandWidth = self.KernelBandWidth
             
+            #Find all necessary joint variables
+            #print(X.shape)
+            #print(self.Z.shape)
+            XZ = np.hstack((X,self.Z))
+            YZ = np.hstack((self.Y,self.Z))
+            XYZ = np.hstack((X,self.Y,self.Z))
+            #Setup the kde computation
+            kdeZ = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(self.Z)
+            kdeXZ = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(XZ)
+            kdeYZ = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(YZ)
+            kdeXYZ = KernelDensity(bandwidth=BandWidth,kernel=self.KernelType).fit(XYZ)
+            #Compute the densities
+            densityZ = np.exp(kdeZ.score_samples(self.Z))
+            densityXZ = np.exp(kdeXZ.score_samples(XZ))
+            densityYZ = np.exp(kdeYZ.score_samples(YZ))
+            densityXYZ = np.exp(kdeXYZ.score_samples(XYZ))
+            #Compute the entropies
+            Hz = -np.sum(np.log(densityZ))/len(densityZ)
+            Hxz = -np.sum(np.log(densityXZ))/len(densityXZ)
+            Hyz = -np.sum(np.log(densityYZ))/len(densityYZ)
+            Hxyz = -np.sum(np.log(densityXYZ))/len(densityXYZ)
+            I = Hxz+Hyz-Hxyz-Hz
+        
+        return I
     
     def MutualInfo_KNN(self,X,Y):
         #construct the joint space
@@ -962,8 +1028,10 @@ class NetworkInference:
     
     
     def Compute_CMI_KNN(self,X):
-        """KNN version of Conditional mutual information for Causation
-        entropy..."""
+        """KNN version (via the paper by Kraskov, Stogbauer and Grassberger called 
+        'Estimating mutual information'
+        of Conditional mutual information for Causation entropy...
+        """
         if self.Z is None:
             return self.MutualInfo_KNN(X,self.Y)#np.max([self.MutualInfo_KNN(X,self.Y),0])
         else:
@@ -983,6 +1051,11 @@ class NetworkInference:
         return np.sum(transformed**2) <= 1
 
     def Entropy_GKNN(self,X, k,Xdist):
+        """A method for estimating entropy (which will be used for estimating mutual
+        informations needed in Causation entropy) which comes from the paper
+        'Geometric k-nearest neighbor estimation of entropy and mutual information'
+        by Lord, Sun and Bollt
+        """
         k = self.KNN_K
         N, d = X.shape
         Xknn = np.zeros((N, k), dtype=int)
@@ -1002,6 +1075,11 @@ class NetworkInference:
         return H_X
 
     def MI_GKNN(self,X, Y):
+        """A method for estimating Mutual information (which will be 
+        needed in Causation entropy) which comes from the paper
+        'Geometric k-nearest neighbor estimation of entropy and mutual information'
+        by Lord, Sun and Bollt
+        """        
         Xdist = cdist(X, X, metric='euclidean')
         Ydist = cdist(Y, Y, metric='euclidean')
         XYdist = cdist(np.hstack((X, Y)), np.hstack((X, Y)), metric='euclidean')
@@ -1013,6 +1091,12 @@ class NetworkInference:
         return HX + HY - HXY    
     
     def Compute_CMI_Geometric_KNN(self,X):
+        """A method for estimating CMI (which will be
+        needed in Causation entropy) which comes from the paper
+        'Geometric k-nearest neighbor estimation of entropy and mutual information'
+        by Lord, Sun and Bollt
+        """        
+        
         if self.Z is None:
             return self.MI_GKNN(X,self.Y)
         YZdist = cdist(np.hstack((self.Y, self.Z)), np.hstack((self.Y, self.Z)), metric='euclidean')
@@ -1025,99 +1109,19 @@ class NetworkInference:
         HXYZ = self.Entropy_GKNN(np.hstack((X, self.Y,self.Z)), self.KNN_K, XYZdist)
         return HXZ+HYZ-HXYZ-HZ
 
-    def Entropy_GKNN_old(self,X):
-        """An implementation of Geometric KNN from Lord, Sun and Bollt's paper:
-            Geometric k-nearest neighbor estimation of entropy and mutual information """
-        if self.KNN_K is None:
-            print("Warning KNN_K was set to None, for GeometricKNN the default is k=20")
-            print()
-            print("If you wish to change this behavior please manually set using set_KNN_K")
-            self.KNN_K=20
-        k = int(self.KNN_K)
-        d = X.shape[1]
-        N = X.shape[0]
-        #The first "term" (really this is multiple terms) is easy to calculate
-        Term1 = np.log(N) + np.log(np.pi**(d/2))-np.log(Gamma(1+(d/2)))
-        #Find the distance between points (this is the heavy memory portion)
-        DF = distance.squareform(distance.pdist(X))
-        AS = DF.argsort(axis=0)[k]
-        
-        #Geometric KNN requires finding the number of points inside the ellipsoid
-        #KforMean is the variable those k values will be stored in
-        KforMean = np.zeros(N)
-        #The size of the epsilon ball for each point....
-        Epsilons = DF[AS[np.arange(N)],np.arange(N)]
-        
-        Term3 = np.zeros(N)
-        for i in range(N):
-            xi = np.matrix(X[i,:])
-            #Find the k nearest neighbors to point i
-            Wh = np.where(DF[i,:]<=DF[AS[i],i])
-            Xi = X[Wh[0],:]
-            
-            #print(xi.shape,Xi.shape)
-            #First center the SVD on the centroid of the k nearest neighbors
-            Z = np.mean(Xi,axis=0)
-            Yi = Xi-Z
-            
-            U,Sigma,V = np.linalg.svd(Yi)
-            
-            #Scale the singular values for use inside the epsilon ball
-            SS = Sigma/np.max(Sigma)
-            #Now project onto the axis determined by V and recenter to the 
-            #ith datapoint...
-            Zi = Xi-xi
-            V = np.matrix(V.T)
-            Zi = (Zi*V)
-            print("This is Xi: ", Xi)
-            print("This is Xi*V: ",Xi*V)
-            #Re-scale...
-            SSE = SS*Epsilons[i]
-           
-            Zi = (Zi.T/SSE[:,np.newaxis]).T#np.divide(Zi,(SS*Epsilons[i]))
-            #print(np.sum(np.isinf(Zi)))
-            Zi[np.isinf(Zi)]=0
-            #Now determine which points are inside the ellipsoid. This can be
-            #done using the equation of an ellipse (x^2/a^2 + y^2/b^2 <1 implies
-            #                                       it is inside the ellipse)
-            Zi = np.square(Zi)
-            SumZi = np.sum(Zi,axis=1)
-            #How many of the k neighbors are inside the ellipse...
-            Wh2 = np.where(SumZi<=1)
-            KforMean[i] = np.max([len(Wh2[0]),1])
-            #This is the final terms combined from the paper
-            Log = np.log(SS*Epsilons[i])
-            Log[np.isinf(Log)] = 0
-            Term3[i] = np.sum(Log)
-        
-        Log2 = np.log(KforMean)
-        Log2[np.isinf(Log2)] = 0
-        Term2 = np.mean(Log2)
-        Term3 = np.mean(Term3)
-        #print("Here is term1,3 and 2: ",Term1,Term3,Term2)
-        return Term1-Term2+Term3
     
-    def Compute_CMI_Geometric_KNN_old(self,X):
-        """Geometric KNN version of Conditional mutual information for Causation
-        entropy..."""
-        if self.Z is None:
-            XcatY = np.concatenate((X,self.Y),axis=1)
-            return np.max([self.Entropy_GKNN(X)+self.Entropy_GKNN(self.Y)-self.Entropy_GKNN(XcatY),0])
-        else:
-            XcatZ = np.concatenate((X,self.Z),axis=1)
-            YcatZ = np.concatenate((self.Y,self.Z),axis=1)
-            XYcatZ = np.concatenate((X,self.Y,self.Z),axis=1)
-            HZ = self.Entropy_GKNN(self.Z)
-            HXZ = self.Entropy_GKNN(XcatZ)
-            HYZ = self.Entropy_GKNN(YcatZ)
-            HXYZ = self.Entropy_GKNN(XYcatZ)
-            return np.max([HXZ+HYZ-HXYZ-HZ,0])
             
     def Compute_CMI_NegativeBinomial(self,X):
         Blah = 1
     
     def PoissEnt(self,Lambdas):
-        
+        """A method for esitmating the Poisson entropy that will be needed for
+        computation of conditional mutual informations. For details see the paper
+        by Fish and Bollt
+        'Interaction networks from discrete event data by Poisson multivariate
+        mutual information estimation and information flow with applications
+        from gene expression data'
+        """
         Lambdas = np.abs(Lambdas)
         First = np.exp(-Lambdas)
         Psum = First
@@ -1146,6 +1150,13 @@ class NetworkInference:
         return np.real(est)
     
     def PoissonJointEntropy_New(self,Cov):
+        """A method for esitmating the Poisson entropy that will be needed for
+        computation of conditional mutual informations. For details see the paper
+        by Fish and Bollt
+        'Interaction networks from discrete event data by Poisson multivariate
+        mutual information estimation and information flow with applications
+        from gene expression data'
+        """        
         T = np.triu(Cov,1)
         T = np.matrix(T)
         U = np.matrix(np.diag(Cov))
@@ -1349,6 +1360,7 @@ class NetworkInference:
             
     
     def Parallel_input_function(self,X,T,TupleX):
+        """For parallelization (simple for loop stuff)"""
         RP = np.random.permutation(T)
         if len(TupleX)>1:
             Xshuff = X[RP,:]
@@ -1406,6 +1418,12 @@ class NetworkInference:
             
     
     def Standard_Shuffle_Test_oCSE(self,X,Ent,alpha):
+        """Implementation of the shuffle test (or permutation test) for 
+        oCSE. See the paper by Sun, Taylor and Bollt entitled:
+            Causal network inference by optimal causation entropy 
+            
+            for details. 
+            """
         self.Xshuffle = True
         #print("This is Y shape: ", self.Y.shape)
         ns = self.Num_Shuffles_oCSE
@@ -1558,8 +1576,12 @@ class NetworkInference:
         S = self.Lasso()
         return S
 
-    
-    def conditional_returns(self):
+    def remove_linearly_dependent_variables(self,matrix):
+           q, r = np.linalg.qr(matrix)
+           independent_cols = np.where(np.abs(np.diag(r)) > 1e-11)[0]  # Use a tolerance
+           return independent_cols    
+       
+    def conditional_returns(self,remove_dependence=False):
         if self.NetworkAdjacency is None:
             raise ValueError("Adjacency matrix must be added to run conditional_returns. Use set_NetworkAdjacency")
         
@@ -1580,8 +1602,25 @@ class NetworkInference:
 
             for j in range(self.n):
                 if self.conditional_returns_set == 'existing_edges':
-                    Set = np.where(A[i,:]==1)
-                    self.indZ = Set[0]
+                    if not remove_dependence:
+                        Set = np.where(A[i,:]!=0)
+                        self.indZ = Set[0]
+                    else:
+                        Set = np.where(A[i,:]!=0)
+                        self.indZ = Set[0]
+                        #check dependence
+                        Zcheck = XY[:,self.indZ]
+                        cor = np.corrcoef(Zcheck.T)
+                        Zcheck = None
+                        c = np.linalg.det(cor)
+                        if c == 0:
+                            indepSet = self.remove_linearly_dependent_variables(cor)
+                            self.indZ = self.indZ[indepSet]
+                            cor = None
+                        else:
+                            cor = None
+                            
+                    
                 elif self.conditional_returns_set == 'all_but_one':
                     Set = np.setdiff1d(np.arange(self.n),np.array([j]))
                     self.indZ = Set
@@ -1590,7 +1629,7 @@ class NetworkInference:
                     raise ValueError("conditional_returns_set must be one of the following: 'existing_edges', 'all_but_one'")
                 
                 self.Z = XY[:,self.indZ]
-                X = self.XY[:,j]
+                X = XY[:,[j]]
                 self.indX = np.array([j])
                 Ent = self.Compute_CMI(X)
                 InnerCond = {}
@@ -1601,6 +1640,7 @@ class NetworkInference:
         return Conditionals
             
     def Estimate_Network(self):
+        """A method for estimating the full network structure from data. """
         #Initialize...
         self.Y = None
         self.Z = None
