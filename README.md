@@ -310,4 +310,13 @@ NI.set_XY(Data)
 B = NI.Estimate_Network()
 ```
 
+One can also adjust the correlation matrix, as sometimes the data runs into an issue where there is multicolinearity even if the data is truly Gaussian (this will not change anything if you are not using the Gaussian parametric version). The way that is handled internally, is to add a constant offset to the correlation matrix, so assuming the original correlation matrix is R, then Rnew = (1-a)*R + a*I, where I is the identity matrix of the same shape as R. How this is handled in the code is assuming you have already defined NI,
+
+```
+#If your data has a zero determinant for the correlation matrix
+NI.set_adjust_correlation(True)
+#The adjustment factor
+NI.set_correlation_adjustment_factor(1e-7)
+```
+
 That covers available functionality for now. Check in again later for more!
