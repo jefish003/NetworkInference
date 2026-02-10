@@ -27,16 +27,16 @@ from joblib import Parallel, delayed
 import multiprocessing
 
 """Written by Jeremie Fish, 
-   Last Update: May 22nd 2025
+   Last Update: Feb 10th 2026
    
    Depending on method used please cite the appropriate papers..."""
 
 class NetworkInference:
-    """A class for NetworkInference. Version number 0.2"""
+    """A class for NetworkInference. Version number 0.3"""
     def __init__(self):
         
         #Version 
-        self.VersionNum = 0.2
+        self.VersionNum = 0.3
         
         #conditional (causation entropy) return stuff
         self.conditional_returns_set = 'existing_edges'
@@ -113,6 +113,19 @@ class NetworkInference:
         self.FPR = None
         self.AUC = None
         self.Xshuffle = False
+        
+        #For student t distribution
+        self.StudentT_nu = 5
+        
+        #Potentially handle data issue, set to true to adjust correlation matrix to handle 0's
+        self.adjust_correlation = False 
+        self.correlation_adjustment_factor = 1e-5
+        
+    def set_adjust_correlation(self,adjust):
+        self.adjust_correlation = adjust
+        
+    def set_correlation_adjustment_factor(self,caf):
+        self.correlation_adjustment_factor = caf
     
     def set_conditional_returns_set(self,cond_ret_type):
         self.conditional_returns_set = cond_ret_type
@@ -276,7 +289,16 @@ class NetworkInference:
         
     def set_Rho(self,Rho):
         self.Rho = Rho
-        
+ 
+    def set_StudentT_nu(self, nu):
+        "Set degrees of freedom for Student-t CMI estimator"
+        if nu <= 0:
+            raise ValueError("Student-t degrees of freedom must be positive.")
+        self.StudentT_nu = nu
+
+    def return_StudentT_nu(self):
+        return self.StudentT_nu
+                
     def return_conditional_returns_set(self):
         return self.conditional_returns_set        
     
@@ -418,6 +440,12 @@ class NetworkInference:
     def return_AUC(self):
         return self.AUC
     
+    def return_adjust_correlation(self):
+        return self.adjust_correlation
+        
+    def return_correlation_adjustment_factor(self):
+        return self.correlation_adjustment_factor
+    
     def save_state(self):
         VersionNum = self.VersionNum
         
@@ -469,7 +497,10 @@ class NetworkInference:
         Save_Dict['parallel_nodes'] = self.parallel_nodes
         Save_Dict['KNN_dist_metric'] = self.KNN_dist_metric
         Save_Dict['conditional_returns_set'] = self.condtional_returns_set
-    
+        Save_Dict['StudentT_nu'] = self.StudentT_nu
+        Save_Dict['adjust_correlation'] = self.adjust_correlation
+        Save_Dict['correlation_adjustment_factor'] = self.correlation_adjustment_factor         
+  
         Date = datetime.datetime.today().strftime('%Y-%m-%d')
         F = glob.glob('NetworkInference_version_'+str(VersionNum)+'_Date_'+Date+'*.npz')
         num = len(F)+1
@@ -554,6 +585,9 @@ class NetworkInference:
         self.set_parallel_nodes(Load_Dict['parallel_nodes'])
         self.set_KNN_dist_metric(Load_Dict['KNN_dist_metric'])
         self.set_conditional_returns_set(Load_Dict['conditional_returns_set'])
+        self.set_StudentT_nu(Load_Dict['StudentT_nu'])
+        self.set_adjust_correlation(Load_Dict['adjust_correlation'])
+        self.set_correlation_adjustment_factor(Load_Dict['correlation_adjustment_factor'])
     
     def nchoosek(self,n,k):
         Range = range(1,n+1)
@@ -718,6 +752,57 @@ class NetworkInference:
             X[i,:] = np.random.poisson(lam_t)
         
         self.XY = X
+        
+    def Gen_Stochastic_StudentT(self, nu=5):
+        """
+        Generate a network-coupled multivariate Student-t VAR(1) process:
+            X_t = A X_{t-1} + eps_t
+        where eps_t ~ multivariate Student-t(df=nu, scale=Epsilon^2 I).
+    
+        This mirrors Gen_Stochastic_Gaussian but with heavy-tailed noise.
+        """
+    
+        if self.NetworkAdjacency is None:
+            raise ValueError("Missing adjacency matrix, please add this using set_NetworkAdjacency")
+    
+        if self.Rho is None:
+            raise ValueError("Missing Rho, please set it using set_Rho")
+    
+        # Store degrees of freedom
+        self.StudentT_nu = nu
+    
+        # Build stable adjacency matrix A
+        R = 2 * (np.random.rand(self.n, self.n) - 0.5)
+        A = np.array(self.NetworkAdjacency) * R
+        A = A / np.max(np.abs(np.linalg.eigvals(A)))
+        A = A * self.Rho
+        self.StudentT_Adjacency = A
+    
+        # Initialize output
+        XY = np.zeros((self.T, self.n))
+    
+        # Initial state: Student-t noise
+        w0 = np.random.chisquare(nu)
+        z0 = np.random.randn(self.n)
+        XY[0, :] = z0 / np.sqrt(w0 / nu)
+    
+        # Iterate dynamics
+        for t in range(1, self.T):
+            # Gaussian part
+            z = np.random.randn(self.n)
+    
+            # Chi-square scaling
+            w = np.random.chisquare(nu)
+    
+            # Student-t noise
+            eps = z / np.sqrt(w / nu)
+    
+            # VAR(1) update
+            XY[t, :] = A @ XY[t-1, :] + eps
+    
+        self.XY = XY
+        
+        
        
     def Compute_CMI_Gaussian_Fast(self,X):
         """An implementation of the Gaussian conditional mutual information from
@@ -1206,6 +1291,119 @@ class NetworkInference:
             H_YZ = HYZ-HZ
             H_XYZ = HXYZ-HXZ
             return H_XYZ-H_YZ
+        
+    def Entropy_StudentT(self, Sigma, d, nu=None):
+        """
+        Differential entropy of a d-dimensional multivariate Student-t distribution
+        with scale matrix Sigma and degrees of freedom nu.
+    
+        H(X) = log( B(ν/2, d/2) * (νπ)^{d/2} * |Σ|^{1/2} )
+               + (ν + d)/2 * (ψ((ν + d)/2) - ψ(ν/2))
+        """
+        if nu is None:
+            nu = self.StudentT_nu
+    
+        # Ensure Sigma is an array
+        Sigma = np.array(Sigma, dtype=float)
+        
+        if Sigma.ndim == 0:
+            Sigma = Sigma.reshape((1,1))
+        elif Sigma.ndim == 1:
+            Sigma = Sigma.reshape((1,1))
+    
+        # Determinant of Sigma
+        det_Sigma = np.linalg.det(Sigma)
+    
+        if det_Sigma <= 0:
+            # Regularize slightly if needed
+            eps = 1e-8
+            Sigma_reg = Sigma + eps * np.eye(Sigma.shape[0])
+            det_Sigma = np.linalg.det(Sigma_reg)
+    
+        # Beta function and digamma
+        # B(a, b) = Gamma(a) * Gamma(b) / Gamma(a + b)
+        a = nu / 2.0
+        b = d / 2.0
+        log_B_ab = np.log(Gamma(a)) + np.log(Gamma(b)) - np.log(Gamma(a + b))
+    
+        term1 = log_B_ab
+        term2 = (d / 2.0) * (np.log(nu) + np.log(np.pi))
+        term3 = 0.5 * np.log(det_Sigma)
+        term4 = (nu + d) / 2.0 * (Digamma((nu + d) / 2.0) - Digamma(nu / 2.0))
+    
+        H = term1 + term2 + term3 + term4
+        return H
+
+    def Compute_CMI_StudentT(self, X):
+        """
+        Student-t conditional mutual information estimator:
+        I(X; Y | Z) under a multivariate Student-t model.
+    
+        Uses:
+            I(X;Y|Z) = H(X,Z) + H(Y,Z) - H(Z) - H(X,Y,Z)
+        with H(.) given by the multivariate Student-t entropy.
+        """
+    
+        # Ensure X and Y are 2D
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+        Y = self.Y
+        if Y is None:
+            raise ValueError("Y must be set before calling Compute_CMI_StudentT.")
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+    
+        nu = self.StudentT_nu
+    
+        # No conditioning set: reduces to mutual information I(X;Y)
+        if self.Z is None:
+            # Covariance matrices
+            SigmaX = np.cov(X.T)
+            SigmaY = np.cov(Y.T)
+            XY = np.concatenate((X, Y), axis=1)
+            SigmaXY = np.cov(XY.T)
+    
+            dX = SigmaX.shape[0] if np.ndim(SigmaX) > 0 else 1
+            dY = SigmaY.shape[0] if np.ndim(SigmaY) > 0 else 1
+            dXY = SigmaXY.shape[0] if np.ndim(SigmaXY) > 0 else 1
+    
+            Hx = self.Entropy_StudentT(SigmaX, dX, nu)
+            Hy = self.Entropy_StudentT(SigmaY, dY, nu)
+            Hxy = self.Entropy_StudentT(SigmaXY, dXY, nu)
+    
+            return Hx + Hy - Hxy
+    
+        # With conditioning set Z
+        Z = self.Z
+        if Z.ndim == 1:
+            Z = Z.reshape(-1, 1)
+    
+        # Build joint variables
+        XZ = np.concatenate((X, Z), axis=1)
+        YZ = np.concatenate((Y, Z), axis=1)
+        XYZ = np.concatenate((X, Y, Z), axis=1)
+    
+        # Covariance matrices
+        SigmaZ = np.cov(Z.T)
+        SigmaXZ = np.cov(XZ.T)
+        SigmaYZ = np.cov(YZ.T)
+        SigmaXYZ = np.cov(XYZ.T)
+    
+        dZ = SigmaZ.shape[0] if np.ndim(SigmaZ) > 0 else 1
+        dXZ = SigmaXZ.shape[0] if np.ndim(SigmaXZ) > 0 else 1
+        dYZ = SigmaYZ.shape[0] if np.ndim(SigmaYZ) > 0 else 1
+        dXYZ = SigmaXYZ.shape[0] if np.ndim(SigmaXYZ) > 0 else 1
+    
+        Hz = self.Entropy_StudentT(SigmaZ, dZ, nu)
+        Hxz = self.Entropy_StudentT(SigmaXZ, dXZ, nu)
+        Hyz = self.Entropy_StudentT(SigmaYZ, dYZ, nu)
+        Hxyz = self.Entropy_StudentT(SigmaXYZ, dXYZ, nu)
+    
+        I = Hxz + Hyz - Hz - Hxyz
+        return I
+    
+
+    
     def Compute_CMI(self,X):
         """Compute the CMI based upon whichever method"""
         if self.InferenceMethod_oCSE == 'Gaussian':
@@ -1237,6 +1435,9 @@ class NetworkInference:
         
         elif self.InferenceMethod_oCSE == 'Hawkes':
             return self.Compute_CMI_Hawkes(X)
+        
+        elif self.InferenceMethod_oCSE == 'StudentT':
+            return self.Compute_CMI_StudentT(X)
         
         else:
             raise ValueError("Sorry oCSE inference method: ", self.InferenceMethod_oCSE, "is not available.")
@@ -1292,7 +1493,6 @@ class NetworkInference:
         loopnum = 0
         while NotStop:
             loopnum = loopnum+1
-            #print(loopnum)
             SetCheck = np.setdiff1d(TestVariables,S)
             m = len(SetCheck)
             if m == 0:
@@ -1338,21 +1538,14 @@ class NetworkInference:
             Z = self.X[:,Inds]
             self.indZ = Inds
             self.indX = S[RP[i]]
-            #if len(Inds)<=1:
-            #    Z = self.X[:,[S[Inds]]]
-            #else:
-            #    Z = self.X[:,S[Inds]]
             self.Z = Z
             if Z.shape[1]==0:
                 self.Z = None
             Ent = self.Compute_CMI(X)
-            #T1 = time.time()
             if not self.parallel_shuffles:
                 Dict = self.Standard_Shuffle_Test_oCSE(X,Ent,self.Backward_oCSE_alpha)
             else:
                 Dict = self.Parallel_Shuffle_Test_oCSE(X,Ent,self.Backward_oCSE_alpha)
-            #T2 = time.time()-T1
-            #print("This is how much time in shuffle test (backward): ",T2)
             if not Dict['Pass']:
                 Sn = np.setdiff1d(Sn,S[RP[i]])
             
@@ -1366,7 +1559,6 @@ class NetworkInference:
             Xshuff = X[RP,:]
         else:
             Xshuff = X[RP]
-        #T1 = time.perf_counter_ns()
         if self.Z is not None:
             Size = np.sum([Xshuff.shape[1],self.Y.shape[1],self.Z.shape[1]])
             Cat = np.concatenate((Xshuff,self.Y,self.Z),axis=1)
@@ -1374,7 +1566,6 @@ class NetworkInference:
             self.shuffX = Arr[0:Xshuff.shape[1]]
             self.shuffY = Arr[self.shuffX[-1]+1:Xshuff.shape[1]+self.Y.shape[1]]
             self.shuffZ = Arr[self.shuffY[-1]+1:self.shuffY[-1]+Xshuff.shape[1]+self.Z.shape[1]]
-            #print("This is shuffZ: ", self.shuffZ)
         else:
             Size = np.sum([Xshuff.shape[1],self.Y.shape[1]])
             Cat = np.concatenate((Xshuff,self.Y),axis=1)
@@ -1388,12 +1579,9 @@ class NetworkInference:
     
     def Parallel_Shuffle_Test_oCSE(self,X,Ent,alpha):
         self.Xshuffle = True
-        #print("This is Y shape: ", self.Y.shape)
         ns = self.Num_Shuffles_oCSE
         T = X.shape[0]
-        #Ents = np.zeros(ns)
         TupleX = X.shape
-        #print("This is X shape: ", TupleX)
         Ents = Parallel(n_jobs=self.num_processes)(delayed(self.Parallel_input_function)(X, T, TupleX) for i in range(ns))
         Ents = np.array(Ents)
         Prctile = int(100*np.floor(ns*(1-alpha))/ns)
@@ -1425,19 +1613,16 @@ class NetworkInference:
             for details. 
             """
         self.Xshuffle = True
-        #print("This is Y shape: ", self.Y.shape)
         ns = self.Num_Shuffles_oCSE
         T = X.shape[0]
         Ents = np.zeros(ns)
         TupleX = X.shape
-        #print("This is X shape: ", TupleX)
         for i in range(ns):
             RP = np.random.permutation(T)
             if len(TupleX)>1:
                 Xshuff = X[RP,:]
             else:
                 Xshuff = X[RP]
-            #T1 = time.perf_counter_ns()
             if self.Z is not None:
                 Size = np.sum([Xshuff.shape[1],self.Y.shape[1],self.Z.shape[1]])
                 Cat = np.concatenate((Xshuff,self.Y,self.Z),axis=1)
@@ -1445,7 +1630,6 @@ class NetworkInference:
                 self.shuffX = Arr[0:Xshuff.shape[1]]
                 self.shuffY = Arr[self.shuffX[-1]+1:Xshuff.shape[1]+self.Y.shape[1]]
                 self.shuffZ = Arr[self.shuffY[-1]+1:self.shuffY[-1]+Xshuff.shape[1]+self.Z.shape[1]]
-                #print("This is shuffZ: ", self.shuffZ)
             else:
                 Size = np.sum([Xshuff.shape[1],self.Y.shape[1]])
                 Cat = np.concatenate((Xshuff,self.Y),axis=1)
@@ -1456,12 +1640,10 @@ class NetworkInference:
             self.shuffCorr = np.corrcoef(Cat.T)
             
             Ents[i] = self.Compute_CMI(Xshuff)
-            #print((time.perf_counter_ns()-T1)*10**-9) 
         
         Prctile = int(100*np.floor(ns*(1-alpha))/ns)
         self.Prctile = Prctile
-        #print(Ents)
-        #print(Ents[Ents>=np.percentile(Ents,Prctile)])
+
         try:
             Threshold = np.min(Ents[Ents>=np.percentile(Ents,Prctile)])
         except ValueError:
@@ -1497,7 +1679,6 @@ class NetworkInference:
         #Find the initial set of potential predictors
         
         S = self.Standard_Forward_oCSE()
-        #print("This is S: ", S)
         
         self.Sinit = S
         
@@ -1506,7 +1687,6 @@ class NetworkInference:
         S = self.Standard_Backward_oCSE(S)
         
         self.Sfinal = S
-        #print(S)
         
         #Reset conditioning set in case other methods need it
         self.Z = None
@@ -1599,6 +1779,9 @@ class NetworkInference:
             self.X = XY_1
             XY = np.hstack((self.X,self.Y))
             self.bigCorr = np.corrcoef(XY.T)
+            if self.adjust_correlation:
+                self.bigCorr = (1-self.correlation_adjustment_factor)*self.bigCorr + self.correlation_adjustment_factor*np.eye(self.bigCorr.shape[0])
+                
 
             for j in range(self.n):
                 if self.conditional_returns_set == 'existing_edges':
@@ -1663,6 +1846,8 @@ class NetworkInference:
                     self.X = XY_1
                     XY = np.hstack((self.X,self.Y))
                     self.bigCorr = np.corrcoef(XY.T)
+                    if self.adjust_correlation:
+                        self.bigCorr = (1-self.correlation_adjustment_factor)*self.bigCorr + self.correlation_adjustment_factor*np.eye(self.bigCorr.shape[0])                    
                     self.indZ = None
                     S = self.Standard_oCSE()
                     B[i,S] = 1
@@ -1703,7 +1888,9 @@ class NetworkInference:
                     self.X = XY_1
                     self.indY = np.array([self.n])
                     XY = np.hstack((self.X,self.Y))
-                    self.bigCorr = np.corrcoef(XY.T)                
+                    self.bigCorr = np.corrcoef(XY.T)     
+                    if self.adjust_correlation:
+                        self.bigCorr = (1-self.correlation_adjustment_factor)*self.bigCorr + self.correlation_adjustment_factor*np.eye(self.bigCorr.shape[0])                    
                     S = self.II_Lasso()
                     B[i,S] = 1 
             else:
@@ -1776,8 +1963,10 @@ class NetworkInference:
                 self.Z = None
                 
                 
-                
-            CMI = self.Compute_CMI_Gaussian_Fast(self.X)
+            if self.InferenceMethod_oCSE == 'StudentT':
+                CMI = self.Compute_CMI_StudentT(self.X)
+            else:
+                CMI = self.Compute_CMI_Gaussian_Fast(self.X)
             if np.isnan(CMI) or np.isinf(CMI):
                 CMI = 1e-100
             self.CMI_matrix[i] = CMI
